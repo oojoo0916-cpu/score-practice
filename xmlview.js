@@ -73,14 +73,15 @@ export async function render(song, xml) {
   try {
     const osmd = new L.OpenSheetMusicDisplay(host, { autoResize: false, backend: "svg", drawTitle: false, drawSubtitle: false, drawComposer: false, drawLyricist: false,
       drawPartNames: false, drawMeasureNumbers: true, pageFormat: "Endless", autoGenerateMultipleRestMeasuresFromRestMeasures: false });
+    const asDoc = (text) => new DOMParser().parseFromString(text, "application/xml");
     try {
-      await osmd.load(xml);
+      await osmd.load(asDoc(xml));
       osmd.render();
     } catch (err) {                                          // 그리다 멈추면 겹친 쉼표를 정리해서 한 번 더
       const clean = sanitize(xml);
       if (clean === xml) throw err;
       host.textContent = "";
-      await osmd.load(clean);
+      await osmd.load(asDoc(clean));
       osmd.render();
     }
     const svg = host.querySelector("svg");
