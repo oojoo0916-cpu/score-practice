@@ -226,7 +226,7 @@ export function parse(xml, title, opts = {}) {
     });
     const piano = !hasLyric && (staves >= 2 || PIANO_NAME.test(names.get(part.getAttribute("id")) || ""));
     for (let s = 1; s <= staves; s++) {
-      lines.push({ si: si++, role: piano ? "piano" : "vocal", label: (names.get(part.getAttribute("id")) || "").replace(/\s+/g, " ").trim(), sub: staves > 1 ? s : 0, notes: mine.get(s) || [] });
+      lines.push({ si: si++, xml: part.getAttribute("id"), role: piano ? "piano" : "vocal", label: (names.get(part.getAttribute("id")) || "").replace(/\s+/g, " ").trim(), sub: staves > 1 ? s : 0, notes: mine.get(s) || [] });
     }
   });
   if (!meas.length) throw new Error("이 MusicXML 파일에는 마디가 없어요");
@@ -264,7 +264,7 @@ export function parse(xml, title, opts = {}) {
     }
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);
     const name = l.role === "piano" ? `피아노 ${k}` : (l.label && !/^(musicxml part|part\s*\d*|voice|staff)$/i.test(l.label) ? l.label + (l.sub ? ` ${l.sub}` : "") : `노래 ${k}`);
-    return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, notes };
+    return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, xml: l.xml, sub: l.sub, notes };
   });
   if (!parts.length) throw new Error("이 MusicXML 파일에는 음표가 없어요");
 

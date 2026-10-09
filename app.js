@@ -81,7 +81,7 @@ function analyze(bytes, title, onProgress) {
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
 const ENGINE = 8;
-const XMLV = 2;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
+const XMLV = 3;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
 
@@ -160,6 +160,7 @@ async function addXml(buf, name, scan = null) {
     const rec = { id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), kind: "xml", title, addedAt: Date.now(), stats: res.stats, song: res.song, settings: null,
       engine: "xml" + XMLV, edits: E.emptyEdits(), method: scan ? `스캔 인식 (${scan.engine === "homr" ? "homr" : "Audiveris"})` : "MusicXML 파일", readSec: sec };
     if (scan) rec.source = "scan";
+    if (scan && scan.layout) rec.layout = scan.layout;      // 원본 그림 위의 마디 자리 (집 컴퓨터가 찾아 준 것)
     await store.addSong(rec, buf);
     if (scan && scan.orig) await store.putOrig(rec.id, scan.orig).catch(() => {});
     const need = res.stats.need_check.length;
@@ -200,7 +201,7 @@ async function addScan(buf, name) {
       if (s.state === "done") {
         const sec = ((performance.now() - t0) / 1000).toFixed(0);
         const type = /\.pdf$/i.test(name) ? "application/pdf" : /\.png$/i.test(name) ? "image/png" : "image/jpeg";
-        await addXml(new TextEncoder().encode(s.xml).buffer, name, { sec, engine: s.info && s.info.engine, orig: { name, type, buf } });
+        await addXml(new TextEncoder().encode(s.xml).buffer, name, { sec, engine: s.info && s.info.engine, layout: s.info && s.info.layout, orig: { name, type, buf } });
         return;
       }
       libStatus(`집 컴퓨터가 스캔 악보를 읽는 중… ${Math.round((performance.now() - t0) / 1000)}초${s.note && /\d+\/\d+쪽/.test(s.note) ? ` (${s.note.match(/\d+\/\d+쪽/)[0]})` : ""} — 한 쪽에 30초쯤 걸려요. 화면을 끄지 말고 기다려 주세요`);
@@ -261,13 +262,41 @@ function pStatus(text, err = false) {
   el.hidden = !text; el.textContent = text || ""; el.classList.toggle("err", err);
 }
 
+// 스캔 곡: 집 컴퓨터가 원본 그림에서 찾아 준 마디 자리(layout)를 곡 자료에 채운다 → PDF 악보처럼 원본 위에 표시할 수 있다.
+// 음표의 가로 자리는 마디 안에서 박에 비례해 어림하고(인식 프로그램이 음표 자리는 알려 주지 않는다), 세로 자리는 오선 위치와 음높이로 계산한다.
+const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+const CLEF_BASE = { G: 30, F: 18, C: 24 };              // 오선 맨 아래 줄의 음(E4, G2, F3)을 "옥타브×7 + 음이름 번호"로
+function applyLayout(song, lay) {
+  if (!lay || !lay.measures || lay.measures.length !== song.measures.length || !lay.pages || !lay.pages.length) return false;
+  song.pages = lay.pages.map((p) => ({ n: p.n, w: p.w, h: p.h }));
+  song.measures.forEach((m, i) => { const L = lay.measures[i]; m.page = L.page; m.system = L.system; m.box = L.box.slice(); });
+  for (const part of song.parts) for (const n of part.notes) {
+    const m = song.measures[n.m], L = lay.measures[n.m], [x0, y0, x1, y1] = L.box;
+    const st = L.staves && L.staves[part.xml];
+    const il = st && st[2] !== "piano" ? (st[1] - st[0]) / 4 : (y1 - y0) / 24;
+    const pad = Math.min(L.first ? 7 * il : 1.3 * il, (x1 - x0) * 0.4);          // 줄 첫 마디는 음자리표·조표 자리를 비운다
+    n.page = L.page;
+    n.x = Math.round((x0 + pad + (x1 - x0 - pad) * 0.96 * Math.min(1, n.beat / m.len)) * 10) / 10;
+    const k = /^([A-G])[#b]*(-?\d+)$/.exec(n.name || "");
+    let y = (y0 + y1) / 2;
+    if (st && st[2] in CLEF_BASE && k) y = st[1] - ((+k[2]) * 7 + STEP_IDX[k[1]] - CLEF_BASE[st[2]]) * (st[1] - st[0]) / 8;
+    else if (st) y = st[0] + (st[1] - st[0]) * (part.sub === 2 ? 0.8 : part.sub === 1 ? 0.2 : 0.5);
+    n.y = Math.round(y * 10) / 10;
+  }
+  return true;
+}
+
 async function openSong(id) {
   let rec = await store.getSong(id);
   if (!rec) return showLibrary();
   if (rec.engine !== wantEngine(rec)) rec = await reread(rec);
   rec.edits = rec.edits || E.emptyEdits();
-  let svg = null;
-  if (isXml(rec)) {                                       // 원본 그림이 없으니 악보를 직접 그리고, 마디·음표 자리를 곡 자료에 채운다
+  let svg = null, orig = null;
+  if (isXml(rec) && rec.layout) {                         // 스캔 곡: 올린 원본 그림 위에 표시한다
+    orig = await store.getOrig(id).catch(() => null);
+    if (!orig || !applyLayout(rec.song, rec.layout)) orig = null;
+  }
+  if (isXml(rec) && !orig) {                              // 원본 그림이 없으니 악보를 직접 그리고, 마디·음표 자리를 곡 자료에 채운다
     try {
       const kept = await store.getDraw(id).catch(() => null);
       if (kept && kept.v === XV.DRAWV && rec.song.drawCheck) svg = XV.fromHtml(kept.html);     // 전에 그려 둔 것
@@ -289,14 +318,15 @@ async function openSong(id) {
   rec.openedAt = Date.now();
   const player = new Player(song, sound, cfg);
   player.pos = player.starts[Math.min(cfg.k || 0, player.starts.length - 1)] || 0;
-  const c = cur = { rec, song, cfg, player, svg, pages: new Map(), boxes: [], anchors: [], head: null, lastK: -1, lastSys: "", pick: null, raf: 0,
+  const origImg = orig && orig.type !== "application/pdf" ? URL.createObjectURL(new Blob([orig.buf], { type: orig.type })) : null;
+  const c = cur = { rec, song, cfg, player, svg, orig, origImg, pages: new Map(), boxes: [], anchors: [], head: null, lastK: -1, lastSys: "", pick: null, raf: 0,
     ed: { on: false, mi: -1, part: null, idx: -1, marks: [], zoomWas: 1 } };
   player.onEnd = () => refreshPlay();
   $("library").hidden = true;
   $("practice").hidden = false;
   $("pTitle").textContent = rec.title;
   $("origBtn").hidden = true;
-  if (rec.source === "scan") {                            // 올린 원본을 새 창에서 볼 수 있게 (누르는 순간에는 이미 주소가 준비되어 있어야 창이 막히지 않는다)
+  if (rec.source === "scan" && !orig) {                   // (다시 그린 악보로 볼 때만) 올린 원본을 새 창에서 볼 수 있게 (누르는 순간에는 이미 주소가 준비되어 있어야 창이 막히지 않는다)
     store.getOrig(id).then((o) => {
       if (!o || cur !== c) return;
       c.origUrl = URL.createObjectURL(new Blob([o.buf], { type: o.type }));
@@ -328,9 +358,10 @@ async function openSong(id) {
     scrollToMeasure(player.kAt(player.pos), false);
     return;
   }
+  if (origImg) { scrollToMeasure(player.kAt(player.pos), false); return; }      // 사진 원본은 그림 그대로 보여 준다
   try {
     const lib = await pdfjs();
-    const data = await store.getPdf(id);
+    const data = orig ? orig.buf : await store.getPdf(id);
     const doc = await lib.getDocument({ data: new Uint8Array(data.slice(0)) }).promise;
     if (cur !== c) { doc.destroy(); return; }          // 그리는 사이에 보관함으로 나갔다
     c.doc = doc;
@@ -349,6 +380,7 @@ function closeSong() {
   if (cur.io) cur.io.disconnect();
   if (cur.doc) cur.doc.destroy();
   if (cur.origUrl) URL.revokeObjectURL(cur.origUrl);
+  if (cur.origImg) URL.revokeObjectURL(cur.origImg);
   save(true);
   $("score").textContent = "";
   cur = null;
@@ -378,8 +410,9 @@ function buildPages() {
     ov.className = "ov";
     el.append(canvas, ov);
     if (cur.svg) el.prepend(cur.svg);                    // MusicXML 곡: 직접 그린 악보 한 장
+    if (cur.origImg) { const img = new Image(); img.className = "orig"; img.alt = ""; img.src = cur.origImg; el.prepend(img); }      // 사진으로 올린 스캔 곡
     root.append(el);
-    cur.pages.set(p.n, { el, canvas, ov, w: p.w, h: p.h, state: cur.svg ? "svg" : "empty" });
+    cur.pages.set(p.n, { el, canvas, ov, w: p.w, h: p.h, state: cur.svg || cur.origImg ? "svg" : "empty" });
   }
   cur.song.measures.forEach((m, mi) => {
     const pg = cur.pages.get(m.page);
