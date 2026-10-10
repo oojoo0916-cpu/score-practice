@@ -430,7 +430,7 @@ async function openSong(id) {
   cfg.tracks = { ...defaults(song).tracks, ...(rec.settings && rec.settings.tracks || {}) };
   if (hasPiano(song) && !(rec.settings && rec.settings.tracks && rec.settings.tracks.piano)) cfg.tracks.chord.mute = true;
   // 스캔 곡: 인식한 피아노 줄은 틀린 음이 많아 지저분하다 → 악보에 인쇄된 코드 기호를 읽었으면 처음에는 코드 반주를 켜고 피아노 줄은 꺼 둔다 ("파트·반주"에서 바꿀 수 있다)
-  if (rec.source === "scan" && !rec.settings && cfg.tracks.piano && song.measures.filter((m) => m.chords.length).length >= song.measures.length * 0.3) {
+  if (rec.source === "scan" && !rec.settings && cfg.tracks.piano && song.measures.filter((m) => m.chords.length).length >= song.measures.length * 0.15) {
     cfg.tracks.chord.mute = false;
     cfg.tracks.piano.mute = true;
   }
