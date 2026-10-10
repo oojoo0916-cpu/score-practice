@@ -1,5 +1,5 @@
 // 재생기: 음표를 조금 앞서 예약해 두는 방식. 멈춤·이어서·구간 반복·빠르기 변경에도 위치(박)를 잃지 않는다.
-import { unfold, mergedNotes, chordEvents, clickEvents, buildTimeline } from "./music.js";
+import { unfold, mergedNotes, splitLines, chordEvents, clickEvents, buildTimeline } from "./music.js";
 
 const AHEAD = 0.35;          // 몇 초 앞까지 미리 예약할지
 const TICK = 30;             // 예약 점검 간격(ms)
@@ -24,6 +24,8 @@ export class Player {
     this.totalBeats = u.total;
     this.parts = song.parts.filter((p) => p.role === "vocal");
     this.merged = this.parts.map((p) => mergedNotes(song, p, this.starts));
+    // 한 줄 안의 화음: 위·가운데·아래로 나눠 들을 수 있게 음마다 표시해 둔다. lines[i] = 그 줄에 있는 것 {top, mid, bottom}
+    this.lines = this.merged.map((ns) => splitLines(ns));
     // 악보에 적힌 피아노 줄(오른손·왼손)은 "piano" 한 트랙으로 묶어 재생한다
     this.pianoNotes = song.parts.filter((p) => p.role === "piano").flatMap((p) => mergedNotes(song, p, this.starts));
     this.hasPiano = this.pianoNotes.length > 0;
@@ -36,7 +38,13 @@ export class Player {
   rebuild() {
     const ev = [];
     this.merged.forEach((ns, i) => {
-      for (const n of ns) ev.push({ b: n.start, d: n.dur, midi: n.midi, tr: this.parts[i].id, v: 0.8, legato: n.slur === "start" || n.slur === "mid" });
+      // 줄마다 "전체 / 위만 / 가운데만 / 아래만" (cfg.tracks[id].line). 혼자 울리는 음(같이 부르는 곳)은 어느 쪽을 골라도 낸다
+      const want = (this.cfg.tracks[this.parts[i].id] || {}).line || "all";
+      const pick = want !== "all" && this.lines[i][want] ? want : "all";
+      for (const n of ns) {
+        if (pick !== "all" && n.line !== "one" && n.line !== pick) continue;
+        ev.push({ b: n.start, d: n.dur, midi: n.midi, tr: this.parts[i].id, v: 0.8, legato: n.slur === "start" || n.slur === "mid" });
+      }
     });
     for (const n of this.pianoNotes) ev.push({ b: n.start, d: n.dur, midi: n.midi, tr: "piano", v: 0.62 });
     ev.push(...chordEvents(this.song, this.starts, this.cfg.style));
@@ -181,6 +189,14 @@ export class Player {
   setTranspose(v) { const beat = this.now(); this.cfg.transpose = Math.max(-12, Math.min(12, v)); this.restartFrom(beat); }
 
   setStyle(s) { const beat = this.now(); this.cfg.style = s; this.rebuild(); this.restartFrom(beat); }
+
+  // 한 줄 안의 화음에서 어느 쪽을 들을지: "all" | "top" | "mid" | "bottom"
+  setLine(id, line) {
+    const beat = this.now();
+    (this.cfg.tracks[id] = this.cfg.tracks[id] || { vol: 0.85, mute: false, solo: false }).line = line;
+    this.rebuild();
+    this.restartFrom(beat);
+  }
 
   setLoop(loop) {
     const beat = this.now();

@@ -33,6 +33,31 @@ export function mergedNotes(song, part, starts) {
   return out;
 }
 
+// 한 노래 줄에 음이 둘 이상 겹치는 곳(화음, 두 성부)을 위·가운데·아래로 나눈다. notes: mergedNotes 의 결과.
+// 각 음에 line 을 적는다: "one"(혼자 울리는 음 = 같이 부르는 곳) | "top" | "mid" | "bottom".
+// 같이 시작하는 화음뿐 아니라, 한쪽이 길게 끌고 다른 쪽이 움직이는 경우도 겹치는 동안의 음높이로 가른다.
+// 돌려주는 값: 이 줄에 있는 것 {top, mid, bottom} (나눠 들을 것이 있는지 화면에서 쓴다)
+export function splitLines(notes) {
+  const eps = 1e-6;
+  const by = notes.slice().sort((a, b) => a.start - b.start);
+  const has = { top: 0, mid: 0, bottom: 0 };
+  by.forEach((n, i) => {
+    const end = n.start + n.dur;
+    let higher = false, lower = false, any = false;
+    for (let j = i - 1; j >= 0 && i - j < 64; j--) {            // 앞에서 시작해 아직 울리는 음
+      const o = by[j];
+      if (o.start + o.dur > n.start + eps) { any = true; if (o.midi > n.midi) higher = true; else if (o.midi < n.midi) lower = true; }
+    }
+    for (let j = i + 1; j < by.length && by[j].start < end - eps; j++) {      // 이 음이 울리는 동안 시작하는 음
+      const o = by[j];
+      any = true; if (o.midi > n.midi) higher = true; else if (o.midi < n.midi) lower = true;
+    }
+    n.line = !any ? "one" : higher && lower ? "mid" : higher ? "bottom" : "top";
+    if (n.line !== "one") has[n.line]++;
+  });
+  return has;
+}
+
 const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const acc = (s) => (s === "#" ? 1 : s === "b" ? -1 : 0);
 

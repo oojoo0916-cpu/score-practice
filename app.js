@@ -880,7 +880,29 @@ function buildMixer() {
     vol.type = "range"; vol.min = 0; vol.max = 100; vol.value = Math.round(t.vol * 100);
     vol.setAttribute("aria-label", r.name + " 볼륨");
     vol.oninput = () => { t.vol = vol.value / 100; c.player.applyMix(); save(); };
-    row.append(name, btns, vol);
+    row.append(name, btns);
+    // 이 노래 줄에 음이 겹치는 곳(화음·두 성부)이 있으면 위·아래를 골라 들을 수 있다
+    const pi = c.player.parts.findIndex((p) => p.id === r.id);
+    const has = pi >= 0 ? c.player.lines[pi] : null;
+    if (has && has.top && has.bottom) {
+      const seg = document.createElement("div");
+      seg.className = "seg";
+      seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", r.name + "에서 들을 성부");
+      const cur0 = t.line && (t.line === "all" || has[t.line]) ? t.line : "all";
+      for (const [v, l] of [["all", "전체"], ["top", "위만"], ...(has.mid ? [["mid", "가운데만"]] : []), ["bottom", "아래만"]]) {
+        const b = document.createElement("button");
+        b.className = "toggle" + (v === cur0 ? " on" : ""); b.textContent = l; b.dataset.v = v;
+        b.onclick = () => {
+          c.player.setLine(r.id, v);
+          for (const x of seg.children) x.classList.toggle("on", x.dataset.v === v);
+          save();
+        };
+        seg.append(b);
+      }
+      row.append(seg);
+    }
+    row.append(vol);
     root.append(row);
   }
   // 재생 위치 표시 방식
