@@ -54,8 +54,56 @@ async function showLibrary() {
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "🗑"; del.setAttribute("aria-label", s.title + " 지우기");
     del.onclick = async () => { if (confirm(`"${s.title}" 악보를 보관함에서 지울까요?`)) { await store.deleteSong(s.id); showLibrary(); } };
-    li.append(open, del);
+    const out = document.createElement("button");
+    out.className = "del out"; out.textContent = "⤓"; out.setAttribute("aria-label", s.title + " 파일로 내보내기"); out.title = "파일로 내보내기";
+    out.onclick = () => exportSong(s);
+    li.append(open, out, del);
     ul.append(li);
+  }
+}
+
+// ---- 곡 하나를 파일(이름.akbo.json)로: 읽은 결과·고친 내용·설정·원본 파일을 모두 담는다
+const toB64 = (buf) => new Promise((ok, no) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(",", 2)[1] || "");
+  r.onerror = () => no(r.error);
+  r.readAsDataURL(new Blob([buf]));
+});
+const fromB64 = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)).buffer;
+
+async function exportSong(s) {
+  try {
+    libStatus(`"${s.title}" 내보낼 파일을 만드는 중…`);
+    const rec = await store.getSong(s.id);
+    const file = await store.getPdf(s.id);
+    const orig = await store.getOrig(s.id).catch(() => null);
+    const pack = { format: "akbo-1", made: new Date().toISOString(), rec, file: await toB64(file),
+      orig: orig ? { name: orig.name, type: orig.type, buf: await toB64(orig.buf) } : null };
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(pack)], { type: "application/json" }));
+    a.download = s.title.replace(/[\\/:*?"<>|]/g, "_") + ".akbo.json";
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    libStatus(`"${s.title}"을(를) 파일로 내보냈어요. 다른 주소(예: 밖에서 쓰는 주소)에서 "악보 올리기"로 이 파일을 고르면 그대로 들어와요.`);
+  } catch (err) {
+    libStatus("내보내지 못했어요: " + err.message, true);
+  }
+}
+
+async function importPack(buf) {
+  try {
+    const pack = JSON.parse(new TextDecoder().decode(buf));
+    if (!pack || pack.format !== "akbo-1" || !pack.rec || !pack.rec.song) throw new Error("악보 연습실에서 내보낸 파일이 아니에요");
+    const rec = pack.rec;
+    rec.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    rec.addedAt = Date.now();
+    delete rec.openedAt;
+    await store.addSong(rec, fromB64(pack.file));
+    if (pack.orig) await store.putOrig(rec.id, { name: pack.orig.name, type: pack.orig.type, buf: fromB64(pack.orig.buf) });
+    libStatus(`"${rec.title}" 가져오기 완료 (읽은 결과·고친 내용·설정이 그대로 들어왔어요)`);
+    await showLibrary();
+  } catch (err) {
+    libStatus("가져오지 못했어요: " + err.message, true);
   }
 }
 
@@ -215,6 +263,7 @@ $("file").onchange = async (e) => {
   const f = e.target.files[0];
   e.target.value = "";
   if (!f) return;
+  if (/\.(akbo|json)$/i.test(f.name) || f.type === "application/json") { await importPack(await f.arrayBuffer()); return; }
   if (/\.(musicxml|mxl|xml)$/i.test(f.name)) { await addXml(await f.arrayBuffer(), f.name); return; }
   if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) {
     if (/^image\//.test(f.type) || /\.(png|jpe?g|tiff?|bmp|webp)$/i.test(f.name)) { await addScan(await f.arrayBuffer(), f.name); return; }
