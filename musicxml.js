@@ -69,6 +69,8 @@ const KIND = {
 };
 
 function chordName(h) {
+  const direct = h.getAttribute("akbo-name");               // 스캔 인식 결과: 글자로 읽은 코드 이름을 그대로 쓴다
+  if (direct) return direct;
   const root = kid(h, "root");
   const kind = kid(h, "kind");
   if (!root || !kind || !(kind.textContent.trim() in KIND)) return null;      // N.C., 로마 숫자 등은 반주를 만들지 않는다
@@ -240,7 +242,10 @@ export function parse(xml, title, opts = {}) {
     if (M.keySet !== undefined) key = M.keySet;
     const nominal = meter[0] * 4 / meter[1], c = M.content;
     const odd = M.implicit || c > nominal + 1e-6 || ((i === 0 || i === meas.length - 1) && c < nominal - 1e-6);
-    const len = odd && c > 1e-6 ? c : nominal;
+    // 인식 결과(스캔)는 마디 길이를 박자표대로 둔다: 잘못 읽힌 마디 하나 때문에 박이 늘어지거나 당겨지면 연습할 수 없다.
+    // 넘치는 음은 아래에서 마디 끝에 맞춰 자른다. (맨 처음의 못갖춘마디만 예외)
+    const pickup0 = i === 0 && c > 1e-6 && c < nominal - 1e-6 && new Set(M.contents.filter((x) => x > 1e-6).map((x) => x.toFixed(4))).size <= 1;
+    const len = opts.check ? (pickup0 ? c : nominal) : (odd && c > 1e-6 ? c : nominal);
     for (const tp of tempos) if (tp.mi === i && tp.beat < len / 2 + 1e-6) bpm = tp.bpm;      // 마디 앞쪽의 빠르기말은 그 마디부터
     const off = M.contents.some((x) => x > 1e-6 && Math.abs(x - nominal) > 1e-6);
     const fine = !opts.check || !off || (i === 0 && M.contents.every((x) => x <= nominal + 1e-6) && new Set(M.contents.filter((x) => x > 1e-6).map((x) => x.toFixed(4))).size <= 1);
@@ -262,6 +267,7 @@ export function parse(xml, title, opts = {}) {
       if (!o) seen.set(id, x);
       else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; }
     }
+    if (opts.check) for (const x of seen.values()) x.dur = Math.min(x.dur, Math.max(0, measures[x.m].len - x.beat));      // 마디 끝을 넘는 길이는 자른다
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);
     const name = l.role === "piano" ? `피아노 ${k}` : (l.label && !/^(musicxml part|part\s*\d*|voice|staff)$/i.test(l.label) ? l.label + (l.sub ? ` ${l.sub}` : "") : `노래 ${k}`);
     return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, xml: l.xml, sub: l.sub, notes };

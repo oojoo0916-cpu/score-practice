@@ -194,7 +194,7 @@ function analyze(bytes, title, onProgress) {
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
 const ENGINE = 8;
-const XMLV = 3;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
+const XMLV = 5;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
 
@@ -429,6 +429,11 @@ async function openSong(id) {
   const cfg = { ...defaults(song), ...(rec.settings || {}) };
   cfg.tracks = { ...defaults(song).tracks, ...(rec.settings && rec.settings.tracks || {}) };
   if (hasPiano(song) && !(rec.settings && rec.settings.tracks && rec.settings.tracks.piano)) cfg.tracks.chord.mute = true;
+  // 스캔 곡: 인식한 피아노 줄은 틀린 음이 많아 지저분하다 → 악보에 인쇄된 코드 기호를 읽었으면 처음에는 코드 반주를 켜고 피아노 줄은 꺼 둔다 ("파트·반주"에서 바꿀 수 있다)
+  if (rec.source === "scan" && !rec.settings && cfg.tracks.piano && song.measures.filter((m) => m.chords.length).length >= song.measures.length * 0.3) {
+    cfg.tracks.chord.mute = false;
+    cfg.tracks.piano.mute = true;
+  }
   rec.openedAt = Date.now();
   const player = new Player(song, sound, cfg);
   player.pos = player.starts[Math.min(cfg.k || 0, player.starts.length - 1)] || 0;
