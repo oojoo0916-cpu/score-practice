@@ -57,7 +57,14 @@ async function showLibrary() {
     const out = document.createElement("button");
     out.className = "del out"; out.textContent = "⤓"; out.setAttribute("aria-label", s.title + " 파일로 내보내기"); out.title = "파일로 내보내기";
     out.onclick = () => exportSong(s);
-    li.append(open, out, del);
+    li.append(open);
+    if (location.origin !== PUBLIC_ORIGIN) {               // 집 주소에서만: 밖에서 쓰는 주소로 바로 보내기
+      const go = document.createElement("button");
+      go.className = "del go"; go.textContent = "↗"; go.setAttribute("aria-label", s.title + " 밖에서 쓰는 주소로 보내기"); go.title = "밖에서 쓰는 주소로 보내기";
+      go.onclick = () => sendOut(s);
+      li.append(go);
+    }
+    li.append(out, del);
     ul.append(li);
   }
 }
@@ -90,21 +97,79 @@ async function exportSong(s) {
   }
 }
 
+// 꾸러미(곡 하나) → 이 주소의 보관함에 넣는다. 파일에서 온 것은 글자(base64), 다른 창에서 바로 받은 것은 자료 그대로다.
+async function takePack(pack) {
+  if (!pack || pack.format !== "akbo-1" || !pack.rec || !pack.rec.song || !pack.file) throw new Error("악보 연습실에서 내보낸 곡이 아니에요");
+  const bytes = (v) => (typeof v === "string" ? fromB64(v) : v);
+  const rec = pack.rec;
+  rec.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2, 8);
+  rec.addedAt = Date.now();
+  delete rec.openedAt;
+  await store.addSong(rec, bytes(pack.file));
+  if (pack.orig) await store.putOrig(rec.id, { name: pack.orig.name, type: pack.orig.type, buf: bytes(pack.orig.buf) });
+  return rec.title;
+}
+
 async function importPack(buf) {
   try {
-    const pack = JSON.parse(new TextDecoder().decode(buf));
-    if (!pack || pack.format !== "akbo-1" || !pack.rec || !pack.rec.song) throw new Error("악보 연습실에서 내보낸 파일이 아니에요");
-    const rec = pack.rec;
-    rec.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-    rec.addedAt = Date.now();
-    delete rec.openedAt;
-    await store.addSong(rec, fromB64(pack.file));
-    if (pack.orig) await store.putOrig(rec.id, { name: pack.orig.name, type: pack.orig.type, buf: fromB64(pack.orig.buf) });
-    libStatus(`"${rec.title}" 가져오기 완료 (읽은 결과·고친 내용·설정이 그대로 들어왔어요)`);
+    const title = await takePack(JSON.parse(new TextDecoder().decode(buf)));
     await showLibrary();
+    libStatus(`"${title}" 가져오기 완료 (읽은 결과·고친 내용·설정이 그대로 들어왔어요)`);
   } catch (err) {
     libStatus("가져오지 못했어요: " + err.message, true);
   }
+}
+
+// ---- 곡을 "밖에서 쓰는 주소"로 바로 보내기 (파일을 거치지 않는다)
+// 보관함은 주소마다 따로다. 집 주소의 앱이 밖에서 쓰는 주소의 앱을 새 창으로 열고, 창과 창 사이로 곡을 건넨다.
+// 곡은 이 기기 안에서만 옮겨지고 인터넷으로 나가지 않는다 (받는 쪽 앱이 자기 보관함에 저장할 뿐이다).
+const PUBLIC_URL = (["localhost", "127.0.0.1"].includes(location.hostname) && new URLSearchParams(location.search).get("out")) || "https://oojoo0916-cpu.github.io/score-practice/";
+const PUBLIC_ORIGIN = new URL(PUBLIC_URL).origin;
+const isHomeOrigin = (o) => { try { return /^(localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(new URL(o).hostname); } catch (err) { return false; } };
+
+async function sendOut(s) {
+  const win = window.open(PUBLIC_URL + "#receive", "_blank");      // 누른 그 순간에 열어야 새 창이 막히지 않는다
+  if (!win) { libStatus("새 창이 막혀서 보내지 못했어요. 브라우저의 팝업 차단을 풀고 다시 눌러 주세요.", true); return; }
+  libStatus(`"${s.title}"을(를) 밖에서 쓰는 주소로 보내는 중… (새 창이 열려요)`);
+  let pack = null, done = false;
+  const ready = (async () => {
+    const rec = await store.getSong(s.id), file = await store.getPdf(s.id), orig = await store.getOrig(s.id).catch(() => null);
+    pack = { format: "akbo-1", made: new Date().toISOString(), rec, file, orig: orig ? { name: orig.name, type: orig.type, buf: orig.buf } : null };
+  })();
+  const onMsg = async (e) => {
+    if (e.origin !== PUBLIC_ORIGIN || !e.data || !e.data.akbo) return;
+    if (e.data.akbo === "ready" && !done) { await ready; win.postMessage({ akbo: "pack", pack }, PUBLIC_ORIGIN); }
+    if (e.data.akbo === "done") { done = true; window.removeEventListener("message", onMsg); libStatus(`"${s.title}" 보내기 완료. 이제 밖에서 쓰는 주소의 보관함에도 들어 있어요.`); }
+    if (e.data.akbo === "error") { done = true; window.removeEventListener("message", onMsg); libStatus("보내지 못했어요: " + (e.data.message || ""), true); }
+  };
+  window.addEventListener("message", onMsg);
+  setTimeout(() => { if (!done) { window.removeEventListener("message", onMsg); libStatus("보내지 못했어요 (새 창에서 응답이 없어요). 인터넷이 되는지 확인하고 다시 눌러 주세요.", true); } }, 90000);
+}
+
+// 받는 쪽: 집 주소의 앱이 이 창을 "#receive"를 붙여 열었을 때
+const sender = window.opener || (window.parent !== window ? window.parent : null);      // 이 창을 열어 준 창 (시험에서는 틀 안에 열기도 한다)
+if (location.hash === "#receive" && sender) {
+  history.replaceState(null, "", location.pathname + location.search);
+  let got = false;
+  window.addEventListener("message", async (e) => {
+    if (got || !e.data || e.data.akbo !== "pack" || !isHomeOrigin(e.origin)) return;     // 집 안 주소에서 온 것만 받는다
+    got = true;
+    try {
+      const title = await takePack(e.data.pack);
+      e.source.postMessage({ akbo: "done" }, e.origin);
+      await showLibrary();
+      libStatus(`"${title}"을(를) 받았어요. 이제 이 주소에서 컴퓨터 없이 연습할 수 있어요.`);
+    } catch (err) {
+      e.source.postMessage({ akbo: "error", message: err.message }, e.origin);
+      libStatus("곡을 받지 못했어요: " + err.message, true);
+    }
+  });
+  let tries = 0;
+  const knock = setInterval(() => {                                // 보낸 쪽이 준비될 때까지 "받을 준비 됐어요"를 알린다 (곡 내용은 들어 있지 않다)
+    if (got || ++tries > 200) { clearInterval(knock); return; }
+    try { sender.postMessage({ akbo: "ready" }, "*"); } catch (err) { /* 열어 준 창이 닫혔다 */ }
+  }, 400);
+  setTimeout(() => { if (!got) libStatus("집 주소에서 보낸 곡을 기다리는 중…"); }, 300);
 }
 
 function libStatus(text, err = false) {
