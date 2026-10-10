@@ -36,7 +36,8 @@ export function mergedNotes(song, part, starts) {
 // 한 노래 줄에 음이 둘 이상 겹치는 곳(화음, 두 성부)을 위·가운데·아래로 나눈다. notes: mergedNotes 의 결과.
 // 각 음에 line 을 적는다: "one"(혼자 울리는 음 = 같이 부르는 곳) | "top" | "mid" | "bottom".
 // 같이 시작하는 화음뿐 아니라, 한쪽이 길게 끌고 다른 쪽이 움직이는 경우도 겹치는 동안의 음높이로 가른다.
-// 혼자 울리는 음이라도 악보에서 어느 성부인지 알 수 있으면(n.voice: 다른 성부가 쉬는 동안의 기둥 방향) 그쪽으로 보낸다.
+// 악보에서 어느 성부인지 알 수 있는 음(n.voice: 두 성부로 적힌 곳의 기둥 방향)은 음높이보다 그것을 먼저 따른다
+// ("top" | "bottom", 두 성부가 같은 음을 내는 곳은 "both" = 같이 부르는 곳). 아래 성부가 더 높이 올라가 엇갈려도 맞게 갈린다.
 // 돌려주는 값: 이 줄에 있는 것 {top, mid, bottom} (나눠 들을 것이 있는지 화면에서 쓴다)
 export function splitLines(notes) {
   const eps = 1e-6;
@@ -53,7 +54,7 @@ export function splitLines(notes) {
       const o = by[j];
       any = true; if (o.midi > n.midi) higher = true; else if (o.midi < n.midi) lower = true;
     }
-    n.line = !any ? (n.voice === "top" || n.voice === "bottom" ? n.voice : "one") : higher && lower ? "mid" : higher ? "bottom" : "top";
+    n.line = n.voice === "top" || n.voice === "bottom" ? n.voice : n.voice === "both" || !any ? "one" : higher && lower ? "mid" : higher ? "bottom" : "top";
     if (n.line !== "one") has[n.line]++;
   });
   return has;

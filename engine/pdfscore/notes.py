@@ -469,10 +469,46 @@ def find_tremolos(events, beams, sp):
 
 def time_events(evs, length):
     """한 마디 안에서 각 음이 몇 번째 박에 시작하는지 정한다.
-    같은 자리에 겹쳐 적힌 음(두 성부)은 같이 시작하고, 다음 음은 먼저 끝나는 쪽 뒤에 이어진다."""
+    같은 자리에 겹쳐 적힌 음(두 성부)은 같이 시작하고, 다음 음은 먼저 끝나는 쪽 뒤에 이어진다.
+    그대로 세어서 박자 합이 안 맞으면, 두 성부로 적힌 마디에서 생기는 두 가지 경우를 차례로 다시 세어 본다
+    (다시 세어서 합이 맞을 때만 받아들인다):
+    ① 한 성부가 마디 전체를 쉬는 온쉼표가 다른 성부의 음표와 같이 있다 → 쉼표는 마디 처음부터 따로 센다
+    ② 두 성부가 머리 하나를 같이 쓰는데 점이 하나뿐이다 → 점은 한쪽 성부의 것이다"""
     evs = sorted([e for e in evs if e.kind != "grace"], key=lambda e: e.x)
     if not evs:
         return True, F(0)
+    ok, total = _time_run(evs, length)
+    if ok:
+        return ok, total
+    whole = [e for e in evs if e.measure_rest]
+    others = [e for e in evs if not e.measure_rest]
+    if whole and others:
+        ok2, total2 = _time_run(others, length)
+        if ok2:
+            for e in whole:
+                e.base, e.dots, e.beat, e.voice = length, 0, F(0), 2
+            return True, total2
+    sp = evs[0].staff.sp
+    for i, a in enumerate(evs):
+        if a.kind != "note" or not a.stem or not a.dots:
+            continue
+        for b in evs[i + 1:]:
+            if b.x - a.x > 1.5 * sp:
+                break
+            if b.kind != "note" or not b.stem or not b.dots or a.stem["up"] == b.stem["up"]:
+                continue
+            if not any(abs(ha.y - hb.y) < 0.1 * sp and abs(ha.x0 - hb.x0) < 0.6 * sp for ha in a.heads for hb in b.heads):
+                continue
+            for e in sorted((a, b), key=lambda e: e.stem["up"]):          # 아래 성부(기둥 아래) 쪽의 점부터 빼 본다
+                keep, e.dots = e.dots, 0
+                ok2, total2 = _time_run(evs, length)
+                if ok2:
+                    return True, total2
+                e.dots = keep
+    return _time_run(evs, length)
+
+
+def _time_run(evs, length):
     for e in evs:
         if e.measure_rest:
             e.base = length

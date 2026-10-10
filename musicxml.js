@@ -108,17 +108,21 @@ export const LAYOUT_W = 800;            // 화면에 그릴 때의 가상 너비
 
 // MusicXML 글자 → { song, stats }. 악보 그림의 자리(쪽·마디 상자·음표 위치)는 화면에 그린 뒤에 채운다.
 // opts.check: 인식 결과(스캔)처럼 틀릴 수 있는 파일 → 어느 파트든 박자 합이 박자표와 다른 마디를 '확인 필요'로 표시한다.
-// 한 오선에 두 성부가 적힌 곳에서, 다른 성부가 쉬는 동안 혼자 나오는 음이 위 성부인지 아래 성부인지를 기둥 방향으로 적는다
-// (x.voice = "top" | "bottom"). 엔진(pdfscore/export.py 의 voice_hints)과 같은 규칙. 같이 소리 나는 곳은 재생할 때 음높이로 가른다.
+// 한 오선에 두 성부가 적힌 곳에서 각 음이 위 성부인지 아래 성부인지를 기둥 방향으로 적는다 (x.voice = "top" | "bottom").
+// 엔진(pdfscore/export.py 의 voice_hints)과 같은 규칙: 다른 성부가 쉼표로 쉬는 동안 혼자 나오는 음,
+// 그리고 같이 소리 나는 다른 음이 모두 다른 성부이고 기둥이 반대쪽인 음. 그 밖에는 적지 않는다(재생할 때 음높이로 가른다).
 function voiceHints(notes, rests) {
   const byM = new Map();
-  for (const r of rests) { if (!byM.has(r.m)) byM.set(r.m, { n: [], r: [] }); byM.get(r.m).r.push(r); }
-  for (const x of notes) { const g = byM.get(x.m); if (g) g.n.push(x); }
+  const at = (m) => { if (!byM.has(m)) byM.set(m, { n: [], r: [] }); return byM.get(m); };
+  for (const r of rests) at(r.m).r.push(r);
+  for (const x of notes) at(x.m).n.push(x);
   for (const g of byM.values()) for (const x of g.n) {
     if (x.stem !== "up" && x.stem !== "down") continue;
     const hit = (o) => o.beat < x.beat + x.dur - 1e-6 && x.beat < o.beat + o.dur - 1e-6;
-    if (g.n.some((o) => o !== x && hit(o))) continue;
-    if (g.r.some((o) => o.v !== x.v && hit(o))) x.voice = x.stem === "up" ? "top" : "bottom";
+    const ns = g.n.filter((o) => o !== x && hit(o)), rs = g.r.filter((o) => o.v !== x.v && hit(o));
+    if (!ns.length && !rs.length) continue;
+    const opp = x.stem === "up" ? "down" : "up";
+    if (ns.every((o) => o.v !== x.v && o.stem === opp)) x.voice = x.stem === "up" ? "top" : "bottom";
   }
 }
 
@@ -289,7 +293,7 @@ export function parse(xml, title, opts = {}) {
     for (const x of l.notes) {
       const id = `${x.m}|${x.beat.toFixed(6)}|${x.midi}`, o = seen.get(id);
       if (!o) seen.set(id, x);
-      else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; if (o.voice !== x.voice) delete o.voice; }
+      else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; if (o.voice !== x.voice) o.voice = "both"; }
     }
     if (opts.check) for (const x of seen.values()) x.dur = Math.min(x.dur, Math.max(0, measures[x.m].len - x.beat));      // 마디 끝을 넘는 길이는 자른다
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);

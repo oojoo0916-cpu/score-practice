@@ -3,6 +3,7 @@
 Audiveris 같은 프로그램의 아이디어(마디선으로 시스템 묶기, 피아노 기준으로 마디 맞추기)만 참고했고
 코드는 새로 작성했다. 이미지가 아니라 PDF의 선 좌표를 그대로 쓰기 때문에 추측이 거의 없다.
 """
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -148,6 +149,35 @@ def _brace_spans(pr, staves):
     return spans
 
 
+_EXPR = re.compile(r"^(?:[pfmsz]+|cresc|decresc|dim|rit|rall|riten|accel|poco|piu|meno|mosso|tempo|molto|sempre|subito|sub|simile|sim|legato|ped|a|e)$", re.I)
+
+
+def _lyrics_between(pr, upper, lower):
+    """두 오선 사이에 가사가 적혀 있는가. 피아노 두 줄 사이에는 셈여림·빠르기말만 있고 가사는 없다.
+    한글은 3자 이상, 영문은 셈여림·나타냄말이 아닌 낱말이 6개 이상이고 오선 너비의 절반 넘게 퍼져 있을 때."""
+    sp = upper.sp
+    y0, y1 = upper.bottom + 0.5 * sp, lower.top - 0.5 * sp
+    cs = sorted([c for c in pr.chars if not music_map(c.font) and y0 < (c.top + c.bottom) / 2 < y1
+                 and upper.x0 - sp <= c.x0 <= upper.x1 + sp and c.t.strip()], key=lambda c: c.x0)
+    if sum(1 for c in cs if "가" <= c.t <= "힣") >= 3:
+        return True
+    words, cur = [], []
+    for c in cs:
+        if not c.t.isalpha():
+            if cur:
+                words.append(cur)
+            cur = []
+            continue
+        if cur and (c.x0 - cur[-1].x1 > 0.25 * c.size or abs(c.oy - cur[-1].oy) > 0.5 * sp):
+            words.append(cur)
+            cur = []
+        cur.append(c)
+    if cur:
+        words.append(cur)
+    words = [w for w in words if not _EXPR.match("".join(c.t for c in w))]
+    return len(words) >= 6 and words[-1][-1].x1 - words[0][0].x0 > 0.5 * (upper.x1 - upper.x0)
+
+
 def group_systems(pr, staves):
     """왼쪽 끝 세로선이나 관통하는 마디선으로 이어진 오선들이 한 시스템."""
     parent = list(range(len(staves)))
@@ -203,8 +233,10 @@ def group_systems(pr, staves):
     for g in merged:
         g.sort(key=lambda s: s.top)
         sysm = System(staves=g, idx=len(systems))
-        if not sysm.piano and len(g) >= 2:
-            for s in g[-2:]:            # 중괄호를 못 찾았으면 맨 아래 두 줄을 피아노로 본다
+        # 중괄호를 못 찾았으면 맨 아래 두 줄을 피아노로 본다.
+        # 단, 그 두 줄 사이에 가사가 적혀 있으면 합창 악보(여성 줄 + 남성 줄처럼 노래 두 줄)이므로 노래 줄로 둔다
+        if not sysm.piano and len(g) >= 2 and not _lyrics_between(pr, g[-2], g[-1]):
+            for s in g[-2:]:
                 s.role = "piano"
         for s in g:
             s.partial = s.x0 > sysm.x0 + 2 * s.sp or s.x1 < sysm.x1 - 2 * s.sp

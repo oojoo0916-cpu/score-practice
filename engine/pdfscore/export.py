@@ -137,11 +137,14 @@ def play_order(measures):
 
 
 def voice_hints(sd):
-    """한 오선에 두 성부가 적힌 마디에서, 한쪽이 쉬는 동안 혼자 나오는 음이 어느 성부인지 기둥 방향으로 알아낸다.
+    """한 오선에 두 성부가 적힌 마디에서 각 음이 위 성부인지 아래 성부인지 기둥 방향으로 알아낸다.
     → {id(음): "top" | "bottom"}
-    두 성부가 같이 소리 내는 곳은 음높이로 가를 수 있으므로(앱의 splitLines) 여기서는 다루지 않는다.
-    쉼표와 겹치지 않는 혼자 나오는 음은 한 성부로 적힌 곳이라 기둥 방향이 음높이를 따를 뿐이다 → 적지 않는다.
-    기둥이 위아래로 둘 달린 음(둘이 같은 음)은 음 둘로 읽히므로 서로 겹쳐서 여기에 들어오지 않는다."""
+    기둥 방향을 믿는 것은 두 성부로 적힌 것이 분명할 때뿐이다:
+    - 다른 성부가 쉼표로 쉬는 동안 혼자 나오는 음
+    - 같이 소리 나는 다른 음이 모두 기둥이 반대쪽인 음 (아래 성부가 위 성부보다 높이 올라가 엇갈려도 맞게 갈린다)
+    아무것과도 겹치지 않는 음은 한 성부로 적힌 곳이라 기둥 방향이 음높이를 따를 뿐이다 → 적지 않는다.
+    기둥 하나에 달린 화음, 기둥이 같은 쪽인 음끼리 겹치는 곳, 기둥 없는 온음표도 적지 않는다 → 앱이 음높이로 가른다(splitLines).
+    기둥이 위아래로 둘 달린 음(둘이 같은 음)은 음 둘로 읽혀 각각 위·아래가 되고, to_song 이 하나로 합치면서 "both"로 적는다."""
     if not sd.ok or sd.approx:
         return {}
     evs = [e for e in sd.events if e.beat is not None and e.kind in ("note", "rest")]
@@ -151,7 +154,7 @@ def voice_hints(sd):
             continue
         a, b = e.beat, e.beat + e.dur
         over = [o for o in evs if o is not e and o.beat < b and a < o.beat + o.dur]
-        if over and all(o.kind == "rest" for o in over):
+        if over and all(o.kind == "rest" or (o.stem and o.stem["up"] != e.stem["up"]) for o in over):
             out[id(e)] = "top" if e.stem["up"] else "bottom"
     return out
 
@@ -193,7 +196,7 @@ def to_song(score, title):
                         "tie": h.tie_out, "tied": h.tie_in, "slur": e.slur, "fermata": e.fermata,
                     })
                     if id(e) in hints:
-                        p["notes"][-1]["voice"] = hints[id(e)]      # 다른 성부가 쉬는 동안 혼자 나오는 음: 위/아래 성부
+                        p["notes"][-1]["voice"] = hints[id(e)]      # 두 성부로 적힌 곳: 위/아래 성부
     plist = [parts[k] for k in sorted(parts, key=lambda k: (k[0] != "vocal", k[1]))]
     for p in plist:
         # 두 성부가 같은 박에 같은 음을 내면 한 번만 (긴 쪽, 붙임줄·가사가 있는 쪽을 남긴다)
@@ -209,7 +212,7 @@ def to_song(score, title):
                 o["tied"] = o["tied"] or n["tied"]
                 o["lyric"] = o["lyric"] or n["lyric"]
                 if o.get("voice") != n.get("voice"):
-                    o.pop("voice", None)
+                    o["voice"] = "both"            # 두 성부가 같은 음: 어느 쪽을 골라 들어도 낸다
         p["notes"] = list(seen.values())
         p["verified"] = p["role"] == "vocal"       # 피아노 줄은 아직 검증하지 않은 참고용
     return {
