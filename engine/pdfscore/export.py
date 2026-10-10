@@ -136,6 +136,26 @@ def play_order(measures):
     return order
 
 
+def voice_hints(sd):
+    """한 오선에 두 성부가 적힌 마디에서, 한쪽이 쉬는 동안 혼자 나오는 음이 어느 성부인지 기둥 방향으로 알아낸다.
+    → {id(음): "top" | "bottom"}
+    두 성부가 같이 소리 내는 곳은 음높이로 가를 수 있으므로(앱의 splitLines) 여기서는 다루지 않는다.
+    쉼표와 겹치지 않는 혼자 나오는 음은 한 성부로 적힌 곳이라 기둥 방향이 음높이를 따를 뿐이다 → 적지 않는다.
+    기둥이 위아래로 둘 달린 음(둘이 같은 음)은 음 둘로 읽히므로 서로 겹쳐서 여기에 들어오지 않는다."""
+    if not sd.ok or sd.approx:
+        return {}
+    evs = [e for e in sd.events if e.beat is not None and e.kind in ("note", "rest")]
+    out = {}
+    for e in evs:
+        if e.kind != "note" or not e.stem:
+            continue
+        a, b = e.beat, e.beat + e.dur
+        over = [o for o in evs if o is not e and o.beat < b and a < o.beat + o.dur]
+        if over and all(o.kind == "rest" for o in over):
+            out[id(e)] = "top" if e.stem["up"] else "bottom"
+    return out
+
+
 def to_song(score, title):
     ms = score.measures
     first_bpm = next((m.bpm for m in ms if m.bpm), None)
@@ -160,6 +180,7 @@ def to_song(score, title):
             p = parts.setdefault(key, {"id": f"{sd.role}{sd.line + 1}", "role": sd.role,
                                        "name": ("노래 " if sd.role == "vocal" else "피아노 ") + str(sd.line + 1),
                                        "notes": []})
+            hints = voice_hints(sd) if sd.role == "vocal" else {}
             for e in sd.events:
                 if e.kind != "note" or e.beat is None:
                     continue
@@ -171,6 +192,8 @@ def to_song(score, title):
                         "page": m.page, "x": round(h.cx, 1), "y": round(h.y, 1),
                         "tie": h.tie_out, "tied": h.tie_in, "slur": e.slur, "fermata": e.fermata,
                     })
+                    if id(e) in hints:
+                        p["notes"][-1]["voice"] = hints[id(e)]      # 다른 성부가 쉬는 동안 혼자 나오는 음: 위/아래 성부
     plist = [parts[k] for k in sorted(parts, key=lambda k: (k[0] != "vocal", k[1]))]
     for p in plist:
         # 두 성부가 같은 박에 같은 음을 내면 한 번만 (긴 쪽, 붙임줄·가사가 있는 쪽을 남긴다)
@@ -185,6 +208,8 @@ def to_song(score, title):
                 o["tie"] = o["tie"] or n["tie"]
                 o["tied"] = o["tied"] or n["tied"]
                 o["lyric"] = o["lyric"] or n["lyric"]
+                if o.get("voice") != n.get("voice"):
+                    o.pop("voice", None)
         p["notes"] = list(seen.values())
         p["verified"] = p["role"] == "vocal"       # 피아노 줄은 아직 검증하지 않은 참고용
     return {

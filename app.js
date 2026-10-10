@@ -193,8 +193,8 @@ function analyze(bytes, title, onProgress) {
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
-const ENGINE = 8;
-const XMLV = 5;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
+const ENGINE = 9;
+const XMLV = 6;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
 

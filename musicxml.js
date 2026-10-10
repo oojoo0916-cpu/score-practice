@@ -108,6 +108,20 @@ export const LAYOUT_W = 800;            // 화면에 그릴 때의 가상 너비
 
 // MusicXML 글자 → { song, stats }. 악보 그림의 자리(쪽·마디 상자·음표 위치)는 화면에 그린 뒤에 채운다.
 // opts.check: 인식 결과(스캔)처럼 틀릴 수 있는 파일 → 어느 파트든 박자 합이 박자표와 다른 마디를 '확인 필요'로 표시한다.
+// 한 오선에 두 성부가 적힌 곳에서, 다른 성부가 쉬는 동안 혼자 나오는 음이 위 성부인지 아래 성부인지를 기둥 방향으로 적는다
+// (x.voice = "top" | "bottom"). 엔진(pdfscore/export.py 의 voice_hints)과 같은 규칙. 같이 소리 나는 곳은 재생할 때 음높이로 가른다.
+function voiceHints(notes, rests) {
+  const byM = new Map();
+  for (const r of rests) { if (!byM.has(r.m)) byM.set(r.m, { n: [], r: [] }); byM.get(r.m).r.push(r); }
+  for (const x of notes) { const g = byM.get(x.m); if (g) g.n.push(x); }
+  for (const g of byM.values()) for (const x of g.n) {
+    if (x.stem !== "up" && x.stem !== "down") continue;
+    const hit = (o) => o.beat < x.beat + x.dur - 1e-6 && x.beat < o.beat + o.dur - 1e-6;
+    if (g.n.some((o) => o !== x && hit(o))) continue;
+    if (g.r.some((o) => o.v !== x.v && hit(o))) x.voice = x.stem === "up" ? "top" : "bottom";
+  }
+}
+
 export function parse(xml, title, opts = {}) {
   const t0 = typeof performance !== "undefined" ? performance.now() : 0;
   const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -127,6 +141,7 @@ export function parse(xml, title, opts = {}) {
   kids(root, "part").forEach((part) => {
     let div = 1, staves = 1, transpose = 0, openEnding = 0;
     const mine = new Map();              // 오선 번호 → 음표들
+    const rests = new Map();             // 오선 번호 → 쉼표들 (두 성부로 적힌 곳에서 누가 쉬는지 보는 데만 쓴다)
     let hasLyric = false;
     kids(part, "measure").forEach((mel, mi) => {
       const M = meas[mi] || (meas[mi] = { number: mel.getAttribute("number"), implicit: mel.getAttribute("implicit") === "yes", content: 0, contents: [],
@@ -156,6 +171,11 @@ export function parse(xml, title, opts = {}) {
             const start = chord ? lastStart : t;
             if (!chord) { lastStart = t; t += d; maxT = Math.max(maxT, t); }
             const p = kid(el, "pitch");
+            const st = Math.min(staves, Math.max(1, Math.round(num(txt(el, "staff")) || 1)));
+            if (kid(el, "rest") && !kid(el, "cue") && d > 0) {
+              if (!rests.has(st)) rests.set(st, []);
+              rests.get(st).push({ m: mi, beat: start / div, dur: d / div, v: txt(el, "voice") });
+            }
             if (!p || kid(el, "cue") || kid(el, "rest")) break;
             const step = txt(p, "step"), alter = Math.round(num(txt(p, "alter"))), oct = Math.round(num(txt(p, "octave")));
             if (!(step in STEP)) break;
@@ -168,12 +188,12 @@ export function parse(xml, title, opts = {}) {
             }
             if (lyric) hasLyric = true;
             const slurs = nt ? kids(nt, "slur").map((x) => x.getAttribute("type")) : [];
-            const st = Math.min(staves, Math.max(1, Math.round(num(txt(el, "staff")) || 1)));
             if (!mine.has(st)) mine.set(st, []);
             mine.get(st).push({ m: mi, beat: start / div, dur: d / div, midi: 12 * (oct + 1) + STEP[step] + alter + transpose,
               name: step + accText(alter) + oct, lyric, page: 1, x: 0, y: 0,
               tie: ties.includes("start"), tied: ties.includes("stop"),
-              slur: slurs.includes("start") ? "start" : slurs.includes("stop") ? "end" : "", fermata: !!(nt && kid(nt, "fermata")) });
+              slur: slurs.includes("start") ? "start" : slurs.includes("stop") ? "end" : "", fermata: !!(nt && kid(nt, "fermata")),
+              v: txt(el, "voice"), stem: txt(el, "stem") });
             break;
           }
           case "backup": t -= num(txt(el, "duration")); if (t < 0) t = 0; break;
@@ -227,6 +247,10 @@ export function parse(xml, title, opts = {}) {
       M.contents.push(maxT / div);
     });
     const piano = !hasLyric && (staves >= 2 || PIANO_NAME.test(names.get(part.getAttribute("id")) || ""));
+    for (const [s, ns] of mine) {
+      if (!piano && !opts.check) voiceHints(ns, rests.get(s) || []);
+      for (const x of ns) { delete x.v; delete x.stem; }
+    }
     for (let s = 1; s <= staves; s++) {
       lines.push({ si: si++, xml: part.getAttribute("id"), role: piano ? "piano" : "vocal", label: (names.get(part.getAttribute("id")) || "").replace(/\s+/g, " ").trim(), sub: staves > 1 ? s : 0, notes: mine.get(s) || [] });
     }
@@ -265,7 +289,7 @@ export function parse(xml, title, opts = {}) {
     for (const x of l.notes) {
       const id = `${x.m}|${x.beat.toFixed(6)}|${x.midi}`, o = seen.get(id);
       if (!o) seen.set(id, x);
-      else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; }
+      else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; if (o.voice !== x.voice) delete o.voice; }
     }
     if (opts.check) for (const x of seen.values()) x.dur = Math.min(x.dur, Math.max(0, measures[x.m].len - x.beat));      // 마디 끝을 넘는 길이는 자른다
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);

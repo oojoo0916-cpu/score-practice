@@ -62,7 +62,7 @@ export function setMeasure(edits, engineSong, partId, mi, nowNotes, engineVer, t
 
 function strip(x) {
   const o = { beat: r4(x.beat), dur: r4(x.dur), midi: x.midi, lyric: x.lyric || "", tie: !!x.tie };
-  for (const f of ["x", "y", "page", "slur", "fermata", "added"]) if (x[f] !== undefined && x[f] !== "" && x[f] !== false) o[f] = x[f];
+  for (const f of ["x", "y", "page", "slur", "fermata", "added", "voice"]) if (x[f] !== undefined && x[f] !== "" && x[f] !== false) o[f] = x[f];
   return o;
 }
 
