@@ -159,7 +159,8 @@ def find_beams(curves, sp, rects=()):
 
 def build_heads(pr, systems, zones):
     """쪽 전체의 음표 머리를 찾아 어느 오선 것인지 정한다.
-    오선 밖의 음표는 반드시 그 오선에서 뻗어 나온 덧줄을 갖고 있으므로, 덧줄이 있는 쪽이 주인이다."""
+    오선 밖의 음표는 반드시 그 오선에서 뻗어 나온 덧줄을 갖고 있으므로, 덧줄이 있는 쪽이 주인이다.
+    두 오선에 다 덧줄이 있으면 머리까지 빠짐없이 이어진 쪽이 주인이다."""
     heads = []
     if not systems:
         return heads
@@ -181,9 +182,15 @@ def build_heads(pr, systems, zones):
                     continue
                 if abs(p - round(p)) > 0.25:
                     continue
-                yreq = s.top - s.sp if p > 9 else s.bottom + s.sp
-                if any(abs(l.y - yreq) < 0.25 * s.sp and l.x0 - 0.8 <= cx <= l.x1 + 0.8 for l in ledgers):
-                    cands.append((1, min(abs(ch.oy - s.top), abs(ch.oy - s.bottom)), s, sysm))
+                on = lambda y: any(abs(l.y - y) < 0.25 * s.sp and l.x0 - 0.8 <= cx <= l.x1 + 0.8 for l in ledgers)
+                q = int(round(p))
+                run = [s.top - k * s.sp for k in range(1, (q - 8) // 2 + 1)] if p > 9 \
+                    else [s.bottom + k * s.sp for k in range(1, -q // 2 + 1)]
+                if on(run[0]):
+                    # 덧줄이 머리까지 끊기지 않고 이어진 오선이 먼저다. 첫 덧줄만 있는 쪽은
+                    # 다른 기호(오선 밖에 매달린 쉼표 등)의 덧줄일 수 있다 (m08 57마디)
+                    whole = all(on(y) for y in run[1:])
+                    cands.append((1 if whole else 2, min(abs(ch.oy - s.top), abs(ch.oy - s.bottom)), s, sysm))
         if cands:
             _, _, st, sysm = min(cands, key=lambda t: (t[0], t[1]))
         else:
