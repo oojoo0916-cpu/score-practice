@@ -22,6 +22,8 @@
     </label>
   </header>
   <p id="libStatus" class="status" hidden></p>
+  <p class="libtools"><button id="cancelBtn" class="btn sm" hidden>읽기 취소</button></p>
+  <p id="slowAsk" class="libtools" hidden><span id="slowText"></span> <button id="waitMoreBtn" class="btn sm">더 기다리기</button> <button id="stopReadBtn" class="btn sm">취소</button></p>
   <ul id="songList" class="songs"></ul>
   <div id="empty" class="empty" hidden>
     <p><b>아직 악보가 없어요.</b></p>
@@ -29,6 +31,8 @@
     <p class="small">사보 프로그램(Finale, Sibelius, MuseScore)에서 뽑은 PDF와, 사보 프로그램이 내보낸 MusicXML 파일(.musicxml · .mxl)을 읽을 수 있어요. 스캔·사진 악보는 집 컴퓨터가 켜져 있고 같은 와이파이일 때 읽을 수 있어요 (1~3분, 틀린 곳이 있을 수 있어요).</p>
   </div>
   <p class="libtools"><button id="exportBtn" class="link" hidden>고친 기록 내보내기</button></p>
+  <p id="persistNote" class="small" hidden></p>
+  <p id="offlineNote" class="small" hidden></p>
   <div id="devBox" class="dev" hidden></div>
   <footer class="credits">피아노 소리: Salamander Grand Piano (Alexander Holm, CC BY 3.0) · MusicXML 악보 그리기: OpenSheetMusicDisplay (BSD-3-Clause)</footer>
 </section>

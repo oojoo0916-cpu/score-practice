@@ -8,6 +8,8 @@ for (let midi = 21, i = 0; midi <= 108; midi += 3, i++) {
   const oct = Math.floor((midi - 12) / 12);
   SAMPLES.push({ midi, name: NAMES[i % 4] + oct });
 }
+export const SAMPLE_BASE = BASE;
+export const SAMPLE_FILES = SAMPLES.map((s) => s.name + ".mp3");      // 피아노 소리 파일 30개의 이름 ("인터넷 없이 쓰기" 준비 확인에 쓴다)
 const MAX_SEC = 7;                                     // 폰 메모리를 아끼려고 녹음을 7초까지만, 한 채널로 보관
 
 export class Sound {

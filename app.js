@@ -5,6 +5,7 @@ import { Player } from "./player.js";
 import * as E from "./edits.js";
 import * as MX from "./musicxml.js";
 import * as XV from "./xmlview.js";
+import * as OFF from "./offline.js";
 
 const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/";
 const MAX_PIXELS = 3.2e6;               // 쪽 하나를 그릴 때 점 개수 상한 (폰 메모리 보호)
@@ -15,6 +16,35 @@ let cur = null;                         // 열려 있는 곡: {rec, player, doc,
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
+// 보관함 보호: 기기의 저장 공간이 모자랄 때 브라우저가 이 앱의 보관함을 지우지 않게 해 달라고 요청한다.
+// 결과(window.__storagePersist): "granted" 지우지 않음 / "denied" 거절됨 / "unsupported" 이 브라우저에는 없는 기능 / "error"
+function persistNote() {
+  const el = $("persistNote"), st = window.__storagePersist;
+  if (!el || st === undefined) return;
+  el.hidden = st === "granted";
+  el.textContent = "이 브라우저는 기기의 저장 공간이 모자라면 보관함을 지울 수 있어요. 중요한 곡과 고친 내용은 ⤓ 단추로 파일로 내보내 두세요.";
+}
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().then((ok) => { window.__storagePersist = ok ? "granted" : "denied"; }, () => { window.__storagePersist = "error"; }).then(persistNote);
+} else window.__storagePersist = "unsupported";
+
+// 저장 실패는 조용히 넘기지 않는다 (저장 공간 부족, 브라우저의 사생활 보호 모드 등). 화면에 알리고 자세한 내용은 기록(console)에 남긴다.
+const SAVE_FAIL = "이 기기에 저장하지 못했어요. 방금 바꾼 내용(설정·고친 음)이 사라질 수 있어요. 기기의 저장 공간을 확인하고, 중요한 곡은 보관함에서 ⤓ 단추로 내보내 두세요.";
+let saveBroken = false, pendingSave = Promise.resolve();
+function saveFailed(err) {
+  console.error("보관함 저장 실패:", err);
+  saveBroken = true;
+  if (cur) pStatus(SAVE_FAIL, true); else libStatus(SAVE_FAIL, true);
+}
+function saveOk() {
+  if (!saveBroken) return;
+  saveBroken = false;                                    // 다시 저장되기 시작했다 → 실패 안내를 거둔다
+  for (const id of ["pStatus", "libStatus"]) if ($(id).textContent === SAVE_FAIL) { $(id).hidden = true; $(id).textContent = ""; }
+}
+// 보관함에 넣기·고쳐 넣기가 실패하면 "읽지 못했다"가 아니라 "저장하지 못했다"고 알린다
+const keep = (p) => p.catch((err) => { console.error("보관함 저장 실패:", err); throw Object.assign(new Error(SAVE_FAIL), { saveFail: true }); });
+const why = (err, prefix) => (err && err.saveFail ? err.message : prefix + (err && err.message || err));
+
 // ------------------------------------------------------------------ 보관함
 const fmtDate = (t) => new Date(t).toLocaleDateString("ko-KR", { month: "long", day: "numeric" });
 
@@ -24,6 +54,7 @@ async function showLibrary() {
   $("library").hidden = false;
   const songs = (await store.listSongs()).sort((a, b) => (b.openedAt || b.addedAt) - (a.openedAt || a.addedAt));
   $("empty").hidden = songs.length > 0;
+  offlineNote();
   const edited = songs.filter((s) => s.edits && (Object.keys(s.edits.ov).length || Object.keys(s.edits.checked).length));
   $("exportBtn").hidden = !edited.length;
   $("exportBtn").onclick = () => {                      // 엔진 개선에 쓸 기록을 파일 하나로 받는다
@@ -81,6 +112,7 @@ const fromB64 = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)).buffer
 async function exportSong(s) {
   try {
     libStatus(`"${s.title}" 내보낼 파일을 만드는 중…`);
+    await flushSave();                                     // 아직 저장하지 않은 설정·고친 내용이 있으면 먼저 저장한다
     const rec = await store.getSong(s.id);
     const file = await store.getPdf(s.id);
     const orig = await store.getOrig(s.id).catch(() => null);
@@ -93,7 +125,7 @@ async function exportSong(s) {
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
     libStatus(`"${s.title}"을(를) 파일로 내보냈어요. 다른 주소(예: 밖에서 쓰는 주소)에서 "악보 올리기"로 이 파일을 고르면 그대로 들어와요.`);
   } catch (err) {
-    libStatus("내보내지 못했어요: " + err.message, true);
+    libStatus(why(err, "내보내지 못했어요: "), true);
   }
 }
 
@@ -105,8 +137,8 @@ async function takePack(pack) {
   rec.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2, 8);
   rec.addedAt = Date.now();
   delete rec.openedAt;
-  await store.addSong(rec, bytes(pack.file));
-  if (pack.orig) await store.putOrig(rec.id, { name: pack.orig.name, type: pack.orig.type, buf: bytes(pack.orig.buf) });
+  await keep(store.addSong(rec, bytes(pack.file)));
+  if (pack.orig) await keep(store.putOrig(rec.id, { name: pack.orig.name, type: pack.orig.type, buf: bytes(pack.orig.buf) }));
   return rec.title;
 }
 
@@ -116,7 +148,7 @@ async function importPack(buf) {
     await showLibrary();
     libStatus(`"${title}" 가져오기 완료 (읽은 결과·고친 내용·설정이 그대로 들어왔어요)`);
   } catch (err) {
-    libStatus("가져오지 못했어요: " + err.message, true);
+    libStatus(why(err, "가져오지 못했어요: "), true);
   }
 }
 
@@ -133,6 +165,7 @@ async function sendOut(s) {
   libStatus(`"${s.title}"을(를) 밖에서 쓰는 주소로 보내는 중… (새 창이 열려요)`);
   let pack = null, done = false;
   const ready = (async () => {
+    await flushSave();
     const rec = await store.getSong(s.id), file = await store.getPdf(s.id), orig = await store.getOrig(s.id).catch(() => null);
     pack = { format: "akbo-1", made: new Date().toISOString(), rec, file, orig: orig ? { name: orig.name, type: orig.type, buf: orig.buf } : null };
   })();
@@ -177,19 +210,116 @@ function libStatus(text, err = false) {
   el.hidden = !text; el.textContent = text || ""; el.classList.toggle("err", err);
 }
 
-function analyze(bytes, title, onProgress) {
+// 분석 엔진이 낸 오류를 쉬운 한 줄로 바꾼다. 파이썬 오류문 같은 원문은 화면에 내지 않고 기록(console)에만 남긴다.
+function explain(err) {
+  const raw = String(err && err.message || err);
+  const dev = /Traceback|Error\b|Exception|File "|\.py\b|https?:\/\/|importScripts|micropip/.test(raw) || raw.length > 140;      // 개발자용 오류문처럼 보이는가
+  if (dev) console.error("악보 읽기 오류 (원문):\n" + raw);
+  if (/PDFSyntaxError|No \/Root object|PSEOF|PDFNoValidXRef|Is this really a PDF|Unexpected EOF/i.test(raw)) return "PDF 파일이 깨졌거나 PDF가 아니에요. 파일을 다시 받아서 올려 주세요.";
+  if (/PDFPasswordIncorrect|PDFEncryptionError|PDFTextExtractionNotAllowed|encrypt/i.test(raw)) return "암호가 걸린 PDF라서 읽을 수 없어요. 암호를 푼 파일로 올려 주세요.";
+  if (/MemoryError|out of memory|allocation failed/i.test(raw)) return "악보가 너무 커서 이 기기에서는 읽지 못했어요. 쪽 수가 적은 파일로 나눠 올려 주세요.";
+  if (/NetworkError|Failed to fetch|Load failed|importScripts|Can't fetch|micropip|wheel|ERR_INTERNET|엔진 파일을 찾지 못했어요/i.test(raw)) return "분석 엔진을 받지 못했어요. 인터넷이 되는지 확인하고 다시 올려 주세요.";
+  if (dev) return "악보를 읽는 중에 문제가 생겼어요. 같은 파일에서 계속 그러면 아직 읽지 못하는 악보예요.";
+  return raw;                                            // 앱이 직접 만든 쉬운 안내(시간 초과 등)는 그대로
+}
+
+// 끝없이 기다리지 않는다: 단계마다 기다리는 시간의 상한(밀리초)이 있고, 넘으면 멈추고 알린다. 자동 시험은 window.__TEST_LIMITS 로 줄여 쓴다.
+// 엔진 준비 3분, 스캔 기다리기 15분(2초마다 물어봄). 악보 읽기는 쪽 수에 맞춘다: 60초 + 쪽마다 20초
+const LIMITS = { engineInit: 180000, readBase: 60000, readPerPage: 20000, scanPoll: 900000, scanStep: 2000 };
+const limit = (k) => (window.__TEST_LIMITS && window.__TEST_LIMITS[k]) || LIMITS[k];
+const readLimit = (pages) => limit("readBase") + (pages || 3) * limit("readPerPage");      // 쪽 수를 모르면 3쪽으로 친다 (= 2분)
+
+// 오래 걸리는 일(악보 읽기, 스캔 기다리기)을 하는 동안 "취소" 단추를 보여 준다
+let busyCancel = null;
+let slowJob = null;                              // 읽기가 정해 둔 시간을 넘겨서 "더 기다릴까요?"를 묻고 있는 일
+function busy(cancel) { busyCancel = cancel; $("cancelBtn").hidden = false; }
+function idle() { busyCancel = null; slowJob = null; $("cancelBtn").hidden = true; $("slowAsk").hidden = true; }
+$("cancelBtn").onclick = $("stopReadBtn").onclick = () => { const c = busyCancel; idle(); if (c) c(); };
+
+// 읽기가 정해 둔 시간을 넘겼다: 바로 끊지 않고 더 기다릴지 묻는다. 묻는 동안에도 엔진은 계속 읽는다 (그 사이에 끝나면 그 결과를 그대로 받는다)
+function askMore(j) {
+  slowJob = j;
+  const sec = Math.round((performance.now() - j.readStart) / 1000);
+  $("slowText").textContent = `악보를 읽는 데 오래 걸리고 있어요 (${j.pages ? j.pages + "쪽, " : ""}${sec}초째). 더 기다릴까요?`;
+  $("slowAsk").hidden = false;
+  $("cancelBtn").hidden = true;                  // 취소는 물음 안의 단추로
+}
+$("waitMoreBtn").onclick = () => {
+  const j = slowJob;
+  slowJob = null;
+  $("slowAsk").hidden = true;
+  if (!j || !jobs.has(j.id)) return;
+  $("cancelBtn").hidden = false;
+  j.arm("read");                                 // 같은 시간만큼 한 번 더 기다린다
+};
+
+// 분석 엔진(워커)을 끄고, 기다리던 일을 모두 그 이유(err)로 끝낸다. 다음에 읽을 때 새 워커를 만든다 (멈춘 워커를 다시 쓰지 않는다)
+function stopEngine(err) {
+  if (worker) { try { worker.terminate(); } catch (e) { /* 이미 끝난 워커 */ } worker = null; }
+  const waiting = [...jobs.values()];
+  jobs.clear();
+  for (const j of waiting) { clearTimeout(j.timer); j.no(err); }
+  idle();
+}
+
+function analyze(bytes, title, onProgress, warm = false) {
   if (!worker) {
     worker = new Worker("engine-worker.js");
     worker.onmessage = (e) => {
       const j = jobs.get(e.data.id);
       if (!j) return;
-      if (e.data.progress) return j.onProgress(e.data.progress);
+      if (e.data.progress) {
+        if (e.data.phase === "read") { j.pages = e.data.pages || 0; j.readStart = performance.now(); j.arm("read"); }
+        return j.onProgress(e.data.progress);
+      }
+      clearTimeout(j.timer);
       jobs.delete(e.data.id);
+      if (!jobs.size) idle();
       e.data.error ? j.no(new Error(e.data.error)) : j.ok(e.data.result);
     };
-    worker.onerror = (e) => { for (const j of jobs.values()) j.no(new Error(e.message || "분석 엔진을 시작하지 못했어요")); jobs.clear(); worker = null; };
+    worker.onerror = (e) => stopEngine(new Error(e.message || "분석 엔진을 시작하지 못했어요"));
   }
-  return new Promise((ok, no) => { const id = ++jobId; jobs.set(id, { ok, no, onProgress }); worker.postMessage({ id, bytes, title }); });
+  return new Promise((ok, no) => {
+    const id = ++jobId, j = { id, ok, no, onProgress, timer: 0, pages: 0, readStart: 0 };
+    // 단계별 시간 제한: 처음에는 "엔진 준비"(넘으면 멈춘다), 워커가 읽기 시작했다고 알리면 "악보 읽기"(쪽 수에 맞춘 시간, 넘으면 더 기다릴지 묻는다)
+    j.arm = (phase) => {
+      clearTimeout(j.timer);
+      j.timer = phase === "read"
+        ? setTimeout(() => askMore(j), readLimit(j.pages))
+        : setTimeout(() => stopEngine(new Error("분석 엔진을 준비하는 데 너무 오래 걸려서 멈췄어요. 인터넷이 되는지 확인하고 다시 올려 주세요.")), limit("engineInit"));
+    };
+    jobs.set(id, j);
+    j.arm("init");
+    busy(() => stopEngine(Object.assign(new Error("읽기를 취소했어요."), { cancelled: true })));
+    worker.postMessage({ id, bytes, title, warm });
+  });
+}
+
+// ---- 인터넷 없이 쓸 준비가 됐는지: 보관함 아래에 알려 준다 (분석 엔진·악보 화면 도구·피아노 소리가 기기에 다 저장됐는지)
+async function offlineNote(msg) {
+  const el = $("offlineNote");
+  if (msg) { el.hidden = false; el.textContent = msg; return; }
+  let st;
+  try { st = await OFF.status(); } catch (err) { st = { supported: false }; }
+  el.hidden = false;
+  el.textContent = "";
+  if (!st.supported) { el.textContent = "인터넷 없이 쓰기: 이 주소에서는 안 돼요 (와이파이로 집 컴퓨터에 접속한 주소). 밖에서 쓰는 주소에서는 됩니다."; return; }
+  if (st.ready) { el.textContent = "인터넷 없이 쓸 준비 완료 ✓ (분석 엔진 · 악보 화면 · 피아노 소리)"; return; }
+  const mark = (p) => (p.ok ? "✓" : p.have ? `${p.have}/${p.need}` : "✗");
+  const label = document.createElement("span");
+  label.textContent = `인터넷 없이 쓰려면 더 받아 둘 것이 있어요 — 분석 엔진 ${mark(st.engine)} · 악보 화면 ${mark(st.pdfjs)} · 피아노 소리 ${st.piano.have}/${st.piano.need} `;
+  const b = document.createElement("button");
+  b.className = "link"; b.id = "offlineBtn"; b.textContent = "지금 받아 두기";
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await OFF.prepare({ pdfjsBase: PDFJS, warmEngine: () => analyze(null, "", () => {}, true), onProgress: (t) => { label.textContent = t + " "; } });
+      offlineNote();
+    } catch (err) {
+      offlineNote(err.cancelled ? "받아 두기를 취소했어요." : "받아 두지 못했어요: " + explain(err) + " (인터넷이 될 때 다시 눌러 주세요)");
+    }
+  };
+  el.append(label, b);
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
@@ -205,9 +335,9 @@ async function rereadXml(rec) {
     if (rec.edits) rec.rereadNote = E.reconcile(res.song, rec.edits);
     Object.assign(rec, { song: res.song, stats: res.stats, engine: wantEngine(rec) });
     if (!same && rec.settings) { rec.settings.loop = null; rec.settings.k = 0; }
-    await store.putSong(rec);
+    await keep(store.putSong(rec));
   } catch (err) {
-    libStatus("파일을 다시 읽지 못해서 예전 결과로 엽니다: " + err.message, true);
+    libStatus(why(err, "파일을 다시 읽지 못해서 예전 결과로 엽니다: "), true);
   }
   return rec;
 }
@@ -226,11 +356,11 @@ async function reread(rec) {
       Object.assign(rec, { song: res.song, stats: res.stats, engine: ENGINE, sha256: res.sha256,
         method: "PDF 직접 읽기" + (res.program ? ` (${res.program})` : ""), readSec: ((performance.now() - t0) / 1000).toFixed(1) });
       if (!same && rec.settings) { rec.settings.loop = null; rec.settings.k = 0; }
-      await store.putSong(rec);
+      await keep(store.putSong(rec));
     }
     libStatus("");
   } catch (err) {
-    libStatus("새 엔진으로 다시 읽지 못해서 예전 결과로 엽니다: " + err.message, true);
+    libStatus(err.saveFail ? err.message : "새 엔진으로 다시 읽지 못해서 예전 결과로 엽니다: " + explain(err), true);
   }
   return rec;
 }
@@ -253,11 +383,12 @@ async function addPdf(buf, name) {
     const sec = ((performance.now() - t0) / 1000).toFixed(1);
     const rec = { id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), title, addedAt: Date.now(), stats: res.stats, song: res.song, settings: null, engine: ENGINE, sha256: res.sha256, edits: E.emptyEdits(),
       method: "PDF 직접 읽기" + (res.program ? ` (${res.program})` : ""), readSec: sec };
-    await store.addSong(rec, buf);
+    await keep(store.addSong(rec, buf));
     libStatus(`"${title}" 읽기 완료 (${sec}초, ${res.stats.measures}마디${res.stats.need_check.length ? `, 확인 필요 ${res.stats.need_check.length}마디` : ""})`);
     await openSong(rec.id);
   } catch (err) {
-    libStatus("악보를 읽지 못했어요: " + err.message + (navigator.onLine ? "" : " (분석 엔진을 처음 받을 때는 인터넷이 필요해요)"), true);
+    if (err.cancelled) { libStatus(err.message); return; }
+    libStatus(err.saveFail ? err.message : "악보를 읽지 못했어요: " + explain(err) + (navigator.onLine ? "" : " (분석 엔진을 처음 받을 때는 인터넷이 필요해요)"), true);
   }
 }
 
@@ -274,14 +405,16 @@ async function addXml(buf, name, scan = null) {
       engine: "xml" + XMLV, edits: E.emptyEdits(), method: scan ? `스캔 인식 (${scan.engine === "homr" ? "homr" : "Audiveris"})` : "MusicXML 파일", readSec: sec };
     if (scan) rec.source = "scan";
     if (scan && scan.layout) rec.layout = scan.layout;      // 원본 그림 위의 마디 자리 (집 컴퓨터가 찾아 준 것)
-    await store.addSong(rec, buf);
-    if (scan && scan.orig) await store.putOrig(rec.id, scan.orig).catch(() => {});
+    await keep(store.addSong(rec, buf));
+    let origLost = false;                                   // 올린 원본(스캔 그림)을 못 넣어도 곡은 쓸 수 있다 → 곡은 열고, 못 넣었다는 것은 알린다
+    if (scan && scan.orig) await store.putOrig(rec.id, scan.orig).catch((err) => { console.error("올린 원본 저장 실패:", err); origLost = true; });
     const need = res.stats.need_check.length;
     libStatus(`"${title}" 읽기 완료 (${sec}초, ${res.stats.measures}마디${need ? `, 확인 필요 ${need}마디` : ""})`
-      + (scan ? " — 스캔 악보는 틀린 곳이 있을 수 있어요. 원본 악보와 같이 보면서 \"고치기\"로 확인해 주세요." : ""));
+      + (scan ? " — 스캔 악보는 틀린 곳이 있을 수 있어요. 원본 악보와 같이 보면서 \"고치기\"로 확인해 주세요." : "")
+      + (origLost ? " (올린 원본 그림은 이 기기에 저장하지 못했어요. 기기의 저장 공간을 확인해 주세요.)" : ""), origLost);
     await openSong(rec.id);
   } catch (err) {
-    libStatus((scan ? "스캔 인식 결과를 열지 못했어요: " : "MusicXML 파일을 읽지 못했어요: ") + err.message, true);
+    libStatus(why(err, scan ? "스캔 인식 결과를 열지 못했어요: " : "MusicXML 파일을 읽지 못했어요: "), true);
   }
 }
 
@@ -295,6 +428,7 @@ async function scanAvailable() {
   return scanOk;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const timed = (ms) => (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);      // 대답 없는 요청을 ms 뒤에 끊는다 (옛 브라우저에서는 생략)
 
 async function addScan(buf, name) {
   if (!(await scanAvailable())) {
@@ -302,14 +436,19 @@ async function addScan(buf, name) {
     return;
   }
   const t0 = performance.now();
+  let cancelled = false;
+  busy(() => { cancelled = true; libStatus("스캔 읽기를 취소했어요. (집 컴퓨터는 읽던 것을 마저 읽고 버려요)"); });
   try {
     libStatus("스캔 악보예요. 집 컴퓨터로 보내는 중…");
     const r = await fetch("scan?name=" + encodeURIComponent(name), { method: "POST", body: buf });
     const j = await r.json();
     if (!j.job) throw new Error(j.error || "보내지 못했어요");
     for (;;) {
-      await wait(2000);
-      const s = await (await fetch("scan/status?job=" + encodeURIComponent(j.job), { cache: "no-store" })).json();
+      await wait(limit("scanStep"));
+      if (cancelled) return;
+      if (performance.now() - t0 > limit("scanPoll")) throw new Error("집 컴퓨터가 너무 오래 걸려서 기다리기를 멈췄어요. 집 컴퓨터의 창이 켜져 있는지 확인하고 다시 올려 주세요.");
+      const s = await (await fetch("scan/status?job=" + encodeURIComponent(j.job), { cache: "no-store", signal: timed(30000) })).json();
+      if (cancelled) return;
       if (s.state === "error") throw new Error(s.error || "읽지 못했어요");
       if (s.state === "done") {
         const sec = ((performance.now() - t0) / 1000).toFixed(0);
@@ -320,7 +459,9 @@ async function addScan(buf, name) {
       libStatus(`집 컴퓨터가 스캔 악보를 읽는 중… ${Math.round((performance.now() - t0) / 1000)}초${s.note && /\d+\/\d+쪽/.test(s.note) ? ` (${s.note.match(/\d+\/\d+쪽/)[0]})` : ""} — 한 쪽에 30초쯤 걸려요. 화면을 끄지 말고 기다려 주세요`);
     }
   } catch (err) {
-    libStatus("스캔 악보를 읽지 못했어요: " + err.message, true);
+    if (!cancelled) libStatus("스캔 악보를 읽지 못했어요: " + (err.name === "TimeoutError" || err.name === "AbortError" ? "집 컴퓨터가 대답하지 않아요." : err.message), true);
+  } finally {
+    idle();
   }
 }
 
@@ -417,7 +558,7 @@ async function openSong(id) {
       if (!svg) {
         libStatus(`"${rec.title}" 악보를 그리고 있어요…`);
         svg = await XV.render(rec.song, await MX.xmlText(await store.getPdf(id)));
-        await store.putDraw(id, { v: XV.DRAWV, html: svg.outerHTML }).catch(() => {});
+        await store.putDraw(id, { v: XV.DRAWV, html: svg.outerHTML }).catch((err) => console.warn("그려 둔 악보를 저장하지 못했어요 (다음에 열 때 다시 그립니다):", err));
         libStatus("");
       }
     } catch (err) {
@@ -506,10 +647,15 @@ function closeSong() {
 }
 
 let saveTimer = 0;
+// 미뤄 둔 저장이 있으면 지금 하고, 진행 중인 저장이 끝날 때까지 기다린다 (내보내기·보내기 전에 부른다)
+async function flushSave() {
+  if (cur && saveTimer) save(true);
+  await pendingSave;
+}
 function save(now = false) {
   if (!cur) return;
   const c = cur;
-  const run = () => { c.cfg.k = c.player.kAt(c.player.now()); c.rec.settings = JSON.parse(JSON.stringify(c.cfg)); store.putSong(c.rec).catch(() => {}); };
+  const run = () => { saveTimer = 0; c.cfg.k = c.player.kAt(c.player.now()); c.rec.settings = JSON.parse(JSON.stringify(c.cfg)); pendingSave = store.putSong(c.rec).then(saveOk, saveFailed); };
   clearTimeout(saveTimer);
   if (now) run(); else saveTimer = setTimeout(run, 600);
 }
@@ -1035,7 +1181,7 @@ function commit(partId, mi, notes, selIdx) {
   refreshBoxes();
   drawMarks();
   renderPanel();
-  store.putSong(c.rec).catch(() => {});
+  pendingSave = store.putSong(c.rec).then(saveOk, saveFailed);
 }
 
 function edit(fn) {

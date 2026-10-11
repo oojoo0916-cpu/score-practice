@@ -95,6 +95,26 @@ def _walk(objs):
             yield o
 
 
+def page_count(source):
+    """PDF(파일 경로 또는 bytes)의 쪽 수만 빨리 센다 (쪽의 내용은 읽지 않는다). 세지 못하면 0.
+    앱이 악보 읽기를 기다리는 시간을 쪽 수에 맞추는 데 쓴다 — 여기서 오류를 내지 않는다(진짜 오류는 읽을 때 알린다)."""
+    import io
+    from pdfminer.pdfdocument import PDFDocument
+    from pdfminer.pdfpage import PDFPage
+    from pdfminer.pdfparser import PDFParser
+
+    try:
+        fp = io.BytesIO(source) if isinstance(source, (bytes, bytearray, memoryview)) else open(source, "rb")
+    except OSError:
+        return 0
+    try:
+        return sum(1 for _ in PDFPage.create_pages(PDFDocument(PDFParser(fp))))
+    except Exception:
+        return 0
+    finally:
+        fp.close()
+
+
 def pages(source):
     """PDF(파일 경로 또는 bytes)의 쪽마다 Prims를 하나씩 돌려준다.
     pdfminer.six만 쓴다 (순수 파이썬이라 브라우저 안에서도 돈다)."""

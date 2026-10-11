@@ -1,5 +1,9 @@
 // 악보 보관함: 기기 안(IndexedDB)에 저장한다. songs = 읽은 결과와 설정, pdfs = 원본 파일(PDF 또는 MusicXML)과 그려 둔 악보.
-const NAME = "score-app";
+// 자동 시험용: 주소에 ?testdb=이름 이 붙어 있으면 따로 떨어진 보관함을 쓴다 (시험이 진짜 보관함을 건드리지 않게). 평소에는 "score-app".
+const TEST_DB = (() => {
+  try { const v = new URLSearchParams(location.search).get("testdb"); return v && /^[a-z0-9-]{1,24}$/.test(v) ? "-test-" + v : ""; } catch (err) { return ""; }
+})();
+const NAME = "score-app" + TEST_DB;
 let dbp = null;
 
 function db() {
