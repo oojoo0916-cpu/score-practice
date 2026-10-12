@@ -111,6 +111,7 @@ def stats(score):
         "warnings": len(score.warnings),
         "meter_guess": sum(1 for m in ms if getattr(m, "meter_guess", False)),      # 박자표를 읽지 못해 4/4로 친 마디 수
         "tempo_found": any(m.bpm for m in ms),                                      # 빠르기말(♩=…)을 읽었는가. 못 읽었으면 ♩=72 로 친다
+        "unsupported": [m.n for m in ms if unsupported_of(m)],                      # 소리 내지 않는 표기(꾸밈음)가 있는 마디
     }
 
 
@@ -250,6 +251,25 @@ def rest_voices(staves):
     return out
 
 
+def why_of(m):
+    """자동 검사에 걸린 마디가 어느 검사에 걸렸는지: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" (노래 줄 기준)."""
+    out = []
+    if not all(s.ok for s in m.vocal):
+        out.append("sum")
+    if m.align:
+        out.append("align")
+    if any(r == "vocal" for r, _ in m.checks):
+        out.append("symbol")
+    return out
+
+
+def unsupported_of(m):
+    """악보에 있지만 소리 내지 않는 표기. 자동 검사 통과 여부와는 별개다.
+    "grace" = 노래 줄의 작은 음표(꾸밈음), "grace_piano" = 피아노 줄의 작은 음표."""
+    names = {("vocal", "grace"): "grace", ("piano", "grace"): "grace_piano"}
+    return sorted({names[k] for k in getattr(m, "skipped", []) if k in names})
+
+
 def to_song(score, title):
     ms = score.measures
     first_bpm = next((m.bpm for m in ms if m.bpm), None)
@@ -270,6 +290,10 @@ def to_song(score, title):
         })
         if getattr(m, "meter_guess", False):
             out_m[-1]["meter_guess"] = True       # 박자표를 읽지 못해 4/4로 쳤다 (앱이 "추정"으로 보여 준다)
+        if not m.ok:
+            out_m[-1]["why"] = why_of(m)          # 자동 검사의 어느 것에 걸렸는지
+        if unsupported_of(m):
+            out_m[-1]["unsupported"] = unsupported_of(m)
     parts = {}
     for mi, m in enumerate(ms):
         for sd in m.staves:
@@ -325,7 +349,9 @@ def to_song(score, title):
                 o["tied"] = o["tied"] or n["tied"]
                 o["lyric"] = o["lyric"] or n["lyric"]
         p["notes"] = list(seen.values())
-        p["verified"] = p["role"] == "vocal"       # 피아노 줄은 아직 검증하지 않은 참고용
+        # 이 줄이 어떤 확인을 거쳤는지: 노래 줄은 자동 검사(박자 합·세로 정렬·기호 검사), 피아노 줄은 검사하지 않은 참고용.
+        # 자동 검사를 통과했다는 것은 사람이 확인했다는 뜻이 아니다 — 사람이 확인한 마디는 앱의 고친 기록(edits.checked)에 따로 남는다
+        p["check"] = "auto" if p["role"] == "vocal" else "none"
     return {
         "format": 2, "title": title, "engine": "pdfscore",
         "pages": score.pages, "tempo": first_bpm or 72, "tempo_found": first_bpm is not None,

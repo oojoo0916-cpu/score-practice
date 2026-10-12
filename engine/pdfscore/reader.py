@@ -54,6 +54,7 @@ class Measure:
     last_in_system: bool = False
     pickup: bool = False
     meter_guess: bool = False                       # 박자표를 아직 하나도 읽지 못해서 4/4로 친 마디
+    skipped: list = field(default_factory=list)     # 악보에 있지만 소리 내지 않는 것 [(역할, 종류)] — 지금은 작은 음표(꾸밈음) "grace" 뿐
 
     @property
     def vocal(self):
@@ -107,6 +108,11 @@ MARK_PATTERNS = [
     ("rubato", re.compile(r"rubato", re.I)),
     ("nav", re.compile(r"\bfine\b|D\.\s*S|D\.\s*C|coda|segno|vamp|\bx\s*\d|\d\s*x\b|N\.C", re.I)),
 ]
+
+
+# 연주 순서를 바꾸는 진행 기호 글자: To Coda, D.S.(al Coda·al Fine), D.C.(al Coda·al Fine), Fine. 글 전체가 이것일 때만 (가사 속의 낱말과 헷갈리지 않게)
+NAV_TEXT = re.compile(r"\s*((d\.?\s*c\.?|d\.?\s*s\.?|da\s+capo|dal\s+segno)(\s+al\s+(fine|coda))?|to\s+coda|fine)\.?\s*", re.I)
+NAV_GLYPHS = {chr(0xE047): "segno", chr(0xE048): "Coda"}      # 표준(SMuFL) 글꼴의 segno·Coda 기호. Finale·Sibelius 옛 글꼴의 기호는 표본이 없어 아직 모른다
 
 
 def _zones(systems):
@@ -256,6 +262,15 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
     marks.assign_lyrics(zch, sysm, events, pr.rects)
     marks.assign_fermatas(zch, sysm, events)
     tempos = marks.find_tempos(zch)
+    # 진행 기호 글자(D.S. al Coda, D.C. al Fine …)는 코드를 찾기 전에 먼저 가려 둔다: 안 그러면 그 속의 'D'·'C' 가 코드 이름으로 읽힌다.
+    # 'Fine' 한 낱말은 오선 안쪽(가사 자리)에 있으면 가사로 본다
+    nav_texts = []
+    for p in marks.phrases([c for c in zch if not c.used]):
+        t = p.text.strip()
+        if NAV_TEXT.fullmatch(t) and not marks.in_rect(p, pr.rects) and not (t.strip(" .").lower() == "fine" and sysm.top <= p.cy <= sysm.bottom):
+            nav_texts.append(p)
+            for c in p.chars:
+                c.used = "nav"
     chords = marks.find_chords(zch, sysm)
     phr = marks.phrases([c for c in zch if not c.used])
 
@@ -278,6 +293,7 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
                     final=bool(right.thick and not right.rep_end and not right.rep_start),
                     double=bool(right.n >= 2 and not right.thick),
                     meter_guess=not st.get("meter_seen", False))
+        m.skipped = [(e.staff.role, "grace") for e in events if e.region == ri and e.kind == "grace"]
         for s in sysm.staves:
             sev = sorted([e for e in evs if e.staff is s], key=lambda e: e.x)
             ok, total = notes.time_events(sev, length)
@@ -338,24 +354,33 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
     # ---- 글자 표시: 괄호(1. 2.), 마디 번호, 배역 이름, rit. 등
     brackets = [c for c in zcv if c.stroke and not c.fill and c.x1 - c.x0 > 3 * sp and c.bottom - c.top < 6 * sp
                 and c.top < sysm.top]
+    for p in nav_texts:
+        # 진행 기호 글자는 마디 끝에 걸린다: 글의 왼쪽 끝이나 오른쪽 끝에서 가장 가까운 마디선에서 '끝나는' 마디의 것이다
+        # (오른쪽 맞춤이면 글이 마디선에서 끝나고, 왼쪽 맞춤이면 마디선에서 시작한다)
+        m = min((m for _, m in made), key=lambda m: min(abs(p.x0 - m.x1), abs(p.x1 - m.x1)))
+        m.marks.append({"type": "nav", "text": p.text.strip(), "beat": m.length, "x": p.x0, "y": p.cy})
     for p in phr:
         txt = p.text.strip()
         if not txt:
             continue
         boxed = marks.in_rect(p, pr.rects)
-        if re.fullmatch(r"[1-9]\.(\s*[1-9]\.)*", txt) and p.cy < sysm.top and not boxed:
+        dotted = re.fullmatch(r"[1-9]\.(\s*[1-9]\.)*", txt)
+        bare = re.fullmatch(r"[1-9]", txt)          # MuseScore 는 괄호 숫자를 점 없이 "1" 로 찍기도 한다
+        if (dotted or bare) and p.cy < sysm.top and not boxed:
             num = int(txt[0])
             br = [c for c in brackets if c.x0 - 3 * sp <= p.x0 <= c.x0 + 3 * sp and abs(c.top - p.top) < 4 * sp]
-            xa, xb = (br[0].x0, max(c.x1 for c in br)) if br else (p.x0, p.x1)
-            hit = False
-            for _, m in made:
-                ov = min(xb, m.x1) - max(xa, m.x0)
-                if ov > 0.5 * (m.x1 - m.x0):
-                    m.ending = num
-                    hit = True
-            if not hit:
-                measure_at(p.cx).ending = num
-            continue
+            # 점 없는 숫자는 괄호 선이 바로 그 자리에서 시작할 때만 괄호 번호로 본다 (마디 번호·손가락 번호와 헷갈리지 않게)
+            if dotted or br:
+                xa, xb = (br[0].x0, max(c.x1 for c in br)) if br else (p.x0, p.x1)
+                hit = False
+                for _, m in made:
+                    ov = min(xb, m.x1) - max(xa, m.x0)
+                    if ov > 0.5 * (m.x1 - m.x0):
+                        m.ending = num
+                        hit = True
+                if not hit:
+                    measure_at(p.cx).ending = num
+                continue
         if txt.isdigit() and "Italic" in p.font and "Bold" not in p.font and p.x0 < sysm.x0 + 4 * sp and not boxed:
             if made[0][1].printed is None:
                 made[0][1].printed = int(txt)
@@ -372,6 +397,16 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
                 m = measure_at(p.x0, 1.0 * sp)
                 m.marks.append({"type": kind, "text": txt, "beat": _beat_at(m, p.x0 + 1.5 * sp, sp), "x": p.x0, "y": p.cy})
                 break
+    # segno·Coda 기호(그림 글자): 그 기호가 놓인 마디의 처음에 걸린다. 'To Coda ⊕' 처럼 글자 옆에 붙은 기호는 그 글의 일부이므로 건너뛴다
+    navs = [k for _, m in made for k in m.marks if k["type"] == "nav"]
+    for c in zch:
+        sym = NAV_GLYPHS.get(c.t)
+        if not sym or c.oy > sysm.bottom:
+            continue
+        if any(abs(k["y"] - c.oy) < 1.0 * sp and k["x"] - 3 * sp <= c.ox <= k["x"] + 16 * sp for k in navs):
+            continue
+        m = measure_at(c.ox)
+        m.marks.append({"type": "nav", "text": sym, "beat": F(0), "x": c.ox, "y": c.oy})
     # ---- 기호 사용 검사: 악보에 있는 기호가 빠짐없이, 앞뒤가 맞게 쓰였는지 (박자 합과 무관한 검사)
     by_region = {ri: m for ri, m in made}
 

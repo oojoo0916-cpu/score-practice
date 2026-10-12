@@ -252,6 +252,35 @@ export function parseChord(name) {
 }
 
 // 코드 반주: 베이스는 낮게, 나머지 음은 가운데 음역에 모아서
+// ---- 확인 상태 (P3-1). 마디마다 서로 다른 네 가지를 섞지 않고 따로 적는다:
+//   state "auto"   자동 검사를 통과했다 (사람이 확인했다는 뜻이 아니다)
+//         "user"   사용자가 "확인 완료"로 표시했다
+//         "unsure" 인식이 불확실하다 — why 에 까닭: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" · 까닭이 안 적힌 옛 자료 "check"
+//                  · 고친 뒤 다시 읽었더니 달라짐 "stale" · 스캔에서 이음줄을 붙임줄로 본 곳 "tie"
+//   unsupported    악보에 있지만 소리 내지 않는 표기 (꾸밈음 "grace"·"grace_piano", 음높이 없는 음표 "unpitched", 해석 못 한 코드 "chord").
+//                  확인했다고 사라지지 않으므로 state 와 따로 둔다
+// song 은 고친 내용을 덧씌운 곡(edits.js 의 applyEdits 결과)이다.
+export function checkState(song) {
+  const tie = new Set();
+  for (const p of song.parts) for (const n of p.notes) if (n.tieGuess) tie.add(n.m);
+  const count = { auto: 0, user: 0, unsure: 0, unsupported: 0 };
+  const measures = song.measures.map((m, mi) => {
+    const why = [];
+    if (m.stale) why.push("stale");                   // 예전에 확인했더라도 다시 봐야 한다
+    else if (!m.checked) {
+      if (!m.ok) why.push(...(m.why && m.why.length ? m.why : ["check"]));
+      if (tie.has(mi)) why.push("tie");
+    }
+    const unsupported = [...(m.unsupported || [])];
+    if ((m.chords || []).some((c) => !parseChord(c.name))) unsupported.push("chord");
+    const state = why.length ? "unsure" : m.checked ? "user" : "auto";
+    count[state]++;
+    if (unsupported.length) count.unsupported++;
+    return { state, why, unsupported };
+  });
+  return { measures, count };
+}
+
 export function chordVoicing(name) {
   const c = parseChord(name);
   if (!c) return null;

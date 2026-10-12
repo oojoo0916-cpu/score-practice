@@ -182,6 +182,7 @@ export function parse(xml, title, opts = {}) {
     const mine = new Map();              // 오선 번호 → 음표들
     const rests = new Map();             // 오선 번호 → 쉼표들 (누가 쉬는지 알아야 혼자 나오는 음이 한 성부의 것인지 같이 부르는 음인지 가른다)
     let hasLyric = false;
+    const skips = [];                    // 소리 내지 않고 넘어간 것 [마디, 종류] — 꾸밈음, 음높이 없는 음표
     kids(part, "measure").forEach((mel, mi) => {
       const M = meas[mi] || (meas[mi] = { number: mel.getAttribute("number"), implicit: mel.getAttribute("implicit") === "yes", content: 0, contents: [],
         rep_start: false, rep_end: false, ending: 0, final: false, chords: [], marks: [], labels: [] });
@@ -206,7 +207,8 @@ export function parse(xml, title, opts = {}) {
             break;
           }
           case "note": {
-            if (kid(el, "grace")) break;                                   // 꾸밈음은 박을 차지하지 않는다
+            if (kid(el, "grace")) { if (!kid(el, "cue")) skips.push([mi, "grace"]); break; }      // 꾸밈음은 박을 차지하지 않는다 (소리도 내지 않는다 → 그 마디에 적어 둔다)
+            if (kid(el, "unpitched")) skips.push([mi, "unpitched"]);       // 음높이 없는 음표(타악기): 박만 차지하고 소리는 내지 않는다
             const d = num(txt(el, "duration")), chord = !!kid(el, "chord");
             const start = chord ? lastStart : t;
             if (!chord) { lastStart = t; t += d; maxT = Math.max(maxT, t); }
@@ -232,6 +234,8 @@ export function parse(xml, title, opts = {}) {
             mine.get(st).push({ m: mi, beat: start / div, dur: d / div, midi: 12 * (oct + 1) + STEP[step] + alter + transpose,
               name: step + accText(alter) + oct, lyric, page: 1, x: 0, y: 0,
               tie: ties.includes("start"), tied: ties.includes("stop"),
+              // 점선 붙임줄 = 스캔 인식에서 '같은 음을 잇는 이음줄'을 붙임줄로 바꾼 것(추정). 화면에서 몇 곳인지 알려 준다
+              ...(nt && kids(nt, "tied").some((x) => x.getAttribute("type") === "start" && x.getAttribute("line-type") === "dashed") ? { tieGuess: true } : {}),
               slur: slurs.includes("start") ? "start" : slurs.includes("stop") ? "end" : "", fermata: !!(nt && kid(nt, "fermata")),
               v: txt(el, "voice") || "1" });
             break;
@@ -290,6 +294,7 @@ export function parse(xml, title, opts = {}) {
       M.contents.push(maxT / div);
     });
     const piano = !hasLyric && (staves >= 2 || PIANO_NAME.test(names.get(part.getAttribute("id")) || ""));
+    for (const [mi, kind] of skips) (meas[mi].skipped || (meas[mi].skipped = new Set())).add(kind === "grace" && piano ? "grace_piano" : kind);
     // 성부 번호는 사보 프로그램이 내보낸 파일에서만 믿는다. 스캔 인식 결과(opts.check)는 성부도 쉼표도 틀릴 수 있어 남기지 않는다(재생할 때 어림한다)
     const voiced = !piano && !opts.check;
     for (const [s, ns] of mine) {
@@ -323,6 +328,8 @@ export function parse(xml, title, opts = {}) {
     const out = { n: Number.isFinite(n) && String(n) === String(M.number).trim() ? n : i + 1, page: 1, system: 1, box: [0, 0, 1, 1], meter: meter.slice(), len, bpm: Math.round(bpm * 100) / 100, key,
       rep_start: M.rep_start, rep_end: M.rep_end, ending: M.ending, final: M.final, pickup: i === 0 && len < nominal - 1e-6,
       ok: fine, piano_ok: true, chords: M.chords.sort((a, b) => a.beat - b.beat), marks: M.marks, labels: M.labels };
+    if (!fine) out.why = ["sum"];                                   // 스캔 인식 결과의 자동 검사는 박자 합뿐이다
+    if (M.skipped) out.unsupported = [...M.skipped].sort();         // 소리 내지 않는 표기 (확인 필요 여부와는 별개)
     for (const tp of tempos) if (tp.mi === i && tp.beat >= len / 2 + 1e-6) bpm = tp.bpm;     // 뒤쪽의 빠르기말은 다음 마디부터
     return out;
   });
@@ -349,7 +356,8 @@ export function parse(xml, title, opts = {}) {
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);
     const name = l.role === "piano" ? `피아노 ${k}` : (l.label && !/^(musicxml part|part\s*\d*|voice|staff)$/i.test(l.label) ? l.label + (l.sub ? ` ${l.sub}` : "") : `노래 ${k}`);
     const rs = l.rests ? { rests: l.rests.filter((r) => r.dur > 0 && r.beat < measures[r.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat), rest_unsure: [] } : {};
-    return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, xml: l.xml, sub: l.sub, notes, ...rs };
+    // check: 이 줄이 어떤 확인을 거쳤는지. 사보 프로그램이 내보낸 파일은 적힌 그대로 옮긴 것("file"), 스캔 인식 결과는 박자 합만 본 것("scan")
+    return { id: l.role + k, role: l.role, name, check: opts.check ? "scan" : "file", staff: l.si, xml: l.xml, sub: l.sub, notes, ...rs };
   });
   if (!parts.length) throw new Error("이 MusicXML 파일에는 음표가 없어요");
 
@@ -357,7 +365,7 @@ export function parse(xml, title, opts = {}) {
     measures, order: playOrder(measures), parts };
   const vn = parts.filter((p) => p.role === "vocal").flatMap((p) => p.notes), pn = parts.filter((p) => p.role === "piano").flatMap((p) => p.notes);
   const stats = { seconds: typeof performance !== "undefined" ? Math.round(performance.now() - t0) / 1000 : 0, pages: 1, measures: measures.length,
-    need_check: measures.filter((m) => !m.ok).map((m) => m.n), piano_need_check: 0, piano_check_list: [], vocal_notes: vn.length, ties: vn.filter((x) => x.tie).length,
+    need_check: measures.filter((m) => !m.ok).map((m) => m.n), unsupported: measures.filter((m) => m.unsupported).map((m) => m.n), piano_need_check: 0, piano_check_list: [], tie_guess: vn.concat(pn).filter((x) => x.tieGuess).length, vocal_notes: vn.length, ties: vn.filter((x) => x.tie).length,
     lyrics: vn.filter((x) => x.lyric).length, chords: measures.reduce((a, m) => a + m.chords.length, 0), piano_notes: pn.length };
   return { song, stats };
 }

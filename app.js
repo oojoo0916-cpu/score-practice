@@ -6,7 +6,7 @@ import * as E from "./edits.js";
 import * as MX from "./musicxml.js";
 import * as XV from "./xmlview.js";
 import * as OFF from "./offline.js";
-import { meterKind, GROUPS, parseChord } from "./music.js";
+import { meterKind, GROUPS, parseChord, checkState } from "./music.js";
 
 const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/";
 const MAX_PIXELS = 3.2e6;               // 쪽 하나를 그릴 때 점 개수 상한 (폰 메모리 보호)
@@ -47,6 +47,23 @@ const keep = (p) => p.catch((err) => { console.error("보관함 저장 실패:",
 const why = (err, prefix) => (err && err.saveFail ? err.message : prefix + (err && err.message || err));
 
 // ------------------------------------------------------------------ 보관함
+// ---- 확인 상태를 쉬운 말로 (P3-1). "자동 검사 통과"는 사람이 확인했다는 뜻이 아니므로 직접 확인한 마디와 따로 센다.
+// 자동 검사가 무엇이었는지는 읽은 방식마다 다르다: PDF 직접 읽기는 박자·세로 정렬·기호 검사, 스캔은 박자 합뿐, MusicXML 파일은 검사 없이 적힌 그대로
+const autoLabel = (rec) => (rec.source === "scan" ? "박자 합만 맞음" : rec.kind === "xml" ? "파일 그대로" : "자동 검사만");
+const AUTO_NOTE = (rec) => (rec.source === "scan" ? "박자 합만 맞아요 — 스캔은 음이 틀릴 수 있으니 원본과 견줘 보세요."
+  : rec.kind === "xml" ? "MusicXML 파일에 적힌 그대로 옮긴 마디예요."
+    : "자동 검사(박자·기호)만 통과했어요 — 음이 맞는지 직접 본 것은 아니에요.");
+const WHY = { sum: "박자 합이 안 맞아요", align: "줄끼리 세로 위치가 어긋나요", symbol: "놓친 음표나 꼬리가 있을 수 있어요", check: "자동 검사에 걸렸어요",
+  stale: "고친 뒤에 악보를 다시 읽었더니 달라졌어요", tie: "이음줄을 붙임줄로 본 곳이 있어요(추정)" };
+const UNSUP = { grace: "꾸밈음", grace_piano: "반주의 꾸밈음", unpitched: "음높이 없는 음표(타악기)", chord: "해석 못 한 코드" };
+function stateText(rec, st, unit = "") {
+  const n = st.count;
+  return `확인 필요 ${n.unsure}${unit} · 직접 확인 ${n.user}${unit} · ${autoLabel(rec)} ${n.auto}${unit}` + (n.unsupported ? ` · 소리 안 나는 표기 ${n.unsupported}${unit}` : "");
+}
+
+// 스캔 곡에서 집 컴퓨터가 읽지 못한 쪽 ("2쪽, 4쪽"). 없으면 빈 글
+const missedPages = (rec) => (rec.scanFailed && rec.scanFailed.length ? rec.scanFailed.map((p) => p + "쪽").join(", ") : "");
+
 const fmtDate = (t) => new Date(t).toLocaleDateString("ko-KR", { month: "long", day: "numeric" });
 
 async function showLibrary() {
@@ -75,14 +92,15 @@ async function showLibrary() {
     open.className = "open";
     const b = document.createElement("b"); b.textContent = s.title;
     const sp = document.createElement("span");
-    const need = s.stats.need_check.length;
-    // 어떤 방식으로 읽었는지, 걸린 시간, 확인 필요 마디 수
+    // 어떤 방식으로 읽었는지, 걸린 시간, 확인 상태(확인 필요 · 직접 확인 · 자동 검사만 · 소리 안 나는 표기)
     const how = s.method ? `${s.method}${s.readSec ? ` ${s.readSec}초` : ""} · ` : "";
     const pn = s.stats.piano_need_check || 0;
     const ne = s.edits ? Object.keys(s.edits.ov).length : 0;
     // 박자표·빠르기를 악보에서 읽지 못해 4/4·♩=72 로 친 곡은 그렇다고 알려 준다 (조용히 가정하지 않는다)
-    const guess = (s.stats.meter_guess ? " · 박자표를 못 읽음(4/4로 침)" : "") + (s.stats.tempo_found === false ? " · 빠르기 추정(♩=72)" : "");
-    sp.textContent = `${how}${s.stats.pages}쪽 ${s.stats.measures}마디 · 확인 필요 ${need}마디${pn ? ` · 반주 어림 ${pn}마디` : ""}${ne ? ` · 고친 곳 ${ne}` : ""}${guess}`;
+    const guess = (s.stats.meter_guess ? " · 박자표를 못 읽음(4/4로 침)" : "") + (s.stats.tempo_found === false ? " · 빠르기 추정(♩=72)" : "")
+      + (s.stats.tie_guess ? ` · 붙임줄 추정 ${s.stats.tie_guess}곳` : "")      // 스캔 인식: 같은 음을 잇는 이음줄을 붙임줄로 본 곳
+      + (missedPages(s) ? ` · 읽지 못한 쪽 ${missedPages(s)}` : "");                 // 스캔 인식: 통째로 빠진 쪽
+    sp.textContent = `${how}${s.stats.pages}쪽 ${s.stats.measures}마디 · ${stateText(s, checkState(E.applyEdits(s.song, s.edits)), "마디")}${pn ? ` · 반주 어림 ${pn}마디` : ""}${ne ? ` · 고친 곳 ${ne}` : ""}${guess}`;
     open.append(b, sp);
     open.onclick = () => openSong(s.id);
     const del = document.createElement("button");
@@ -329,8 +347,8 @@ async function offlineNote(msg) {
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
-const ENGINE = 16;
-const XMLV = 8;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
+const ENGINE = 21;
+const XMLV = 10;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
 
@@ -411,6 +429,7 @@ async function addXml(buf, name, scan = null) {
       engine: "xml" + XMLV, edits: E.emptyEdits(), method: scan ? `스캔 인식 (${scan.engine === "homr" ? "homr" : "Audiveris"})` : "MusicXML 파일", readSec: sec };
     if (scan) rec.source = "scan";
     if (scan && scan.layout) rec.layout = scan.layout;      // 원본 그림 위의 마디 자리 (집 컴퓨터가 찾아 준 것)
+    if (scan && scan.failed && scan.failed.length) { rec.scanFailed = scan.failed.slice(); rec.scanPages = scan.pages || 0; }      // 읽지 못한 쪽 — 보관함과 곡 화면에 알린다
     await keep(store.addSong(rec, buf));
     let origLost = false;                                   // 올린 원본(스캔 그림)을 못 넣어도 곡은 쓸 수 있다 → 곡은 열고, 못 넣었다는 것은 알린다
     if (scan && scan.orig) await store.putOrig(rec.id, scan.orig).catch((err) => { console.error("올린 원본 저장 실패:", err); origLost = true; });
@@ -459,7 +478,9 @@ async function addScan(buf, name) {
       if (s.state === "done") {
         const sec = ((performance.now() - t0) / 1000).toFixed(0);
         const type = /\.pdf$/i.test(name) ? "application/pdf" : /\.png$/i.test(name) ? "image/png" : "image/jpeg";
-        await addXml(new TextEncoder().encode(s.xml).buffer, name, { sec, engine: s.info && s.info.engine, layout: s.info && s.info.layout, orig: { name, type, buf } });
+        const info = s.info || {};
+        await addXml(new TextEncoder().encode(s.xml).buffer, name, { sec, engine: info.engine, layout: info.layout, orig: { name, type, buf },
+          failed: Array.isArray(info.failed_pages) ? info.failed_pages : [], pages: info.pages || 0 });      // 읽지 못한 쪽(그 쪽의 마디는 곡에 없다)
         return;
       }
       libStatus(`집 컴퓨터가 스캔 악보를 읽는 중… ${Math.round((performance.now() - t0) / 1000)}초${s.note && /\d+\/\d+쪽/.test(s.note) ? ` (${s.note.match(/\d+\/\d+쪽/)[0]})` : ""} — 한 쪽에 30초쯤 걸려요. 화면을 끄지 말고 기다려 주세요`);
@@ -586,7 +607,7 @@ async function openSong(id) {
   player.pos = player.starts[Math.min(cfg.k || 0, player.starts.length - 1)] || 0;
   const origImg = orig && orig.type !== "application/pdf" ? URL.createObjectURL(new Blob([orig.buf], { type: orig.type })) : null;
   const c = cur = { rec, song, cfg, player, svg, orig, origImg, pages: new Map(), boxes: [], anchors: [], head: null, lastK: -1, lastSys: "", pick: null, raf: 0,
-    ed: { on: false, mi: -1, part: null, idx: -1, marks: [], zoomWas: 1 } };
+    ed: { on: false, mi: -1, part: null, idx: -1, marks: [], zoomWas: 1 }, names: { on: false, els: [] } };
   player.onEnd = () => refreshPlay();
   $("library").hidden = true;
   $("practice").hidden = false;
@@ -603,6 +624,7 @@ async function openSong(id) {
   applyZoom(false);
   applyCursor();
   buildPages();
+  drawNames();
   buildMixer();
   refreshAll();
   save();
@@ -617,6 +639,9 @@ async function openSong(id) {
         + (r.stale.length + r.lost.length ? `, 다시 확인이 필요한 곳 ${r.stale.length + r.lost.length}곳 (주황 점선 표시)` : ""));
     }
   }
+  // 스캔에서 통째로 빠진 쪽이 있으면 열 때마다 알린다 — 다른 안내에 덮이지 않게 제 줄(#pMissed)에 둔다 (그 쪽의 마디는 곡에 없어서, 모르고 연습하면 중간이 건너뛰어진다)
+  $("pMissed").hidden = !missedPages(rec);
+  if (missedPages(rec)) $("pMissed").textContent = (`이 스캔 악보의 ${missedPages(rec)}은 읽지 못했어요${rec.scanPages ? ` (전체 ${rec.scanPages}쪽)` : ""}. 그 쪽의 마디는 빠져 있어요 — 그 쪽만 더 또렷하게 찍어서 다시 올려 보세요.`);
   if (svg) {
     const dc = rec.song.drawCheck;
     // 스캔 곡은 '확인 필요' 표시가 따로 있으므로 이 안내는 띄우지 않는다
@@ -810,6 +835,7 @@ function applyZoom(rerender) {
   for (const pg of cur.pages.values()) if (pg.state === "done") pg.state = "stale";
   if (cur.io) { cur.io.disconnect(); observePages(); }
   cur.lastSys = "";
+  drawNames();                                            // 이름표가 서로 겹치는지는 화면 크기에 따라 달라진다
   scrollToMeasure(cur.player.kAt(cur.player.now()), false);
 }
 $("zoomBtn").onclick = () => { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; localStorage.setItem("zoom", zoom); applyZoom(true); };
@@ -1125,9 +1151,12 @@ $("sheetClose").onclick = $("sheetBack").onclick = () => sheet(false);
 // 엔진이 읽은 결과(rec.song)는 바꾸지 않는다. 고친 내용(rec.edits)을 덧씌운 것이 cur.song 이다.
 function refreshBoxes() {
   const c = cur;
+  c.check = checkState(c.song);                           // 마디마다의 확인 상태 (고친 내용·확인 완료가 반영된 것)
   c.song.measures.forEach((m, mi) => {
-    const b = c.boxes[mi];
-    b.classList.toggle("flag", !m.ok);
+    const b = c.boxes[mi], st = c.check.measures[mi];
+    b.classList.toggle("flag", st.state === "unsure");
+    b.classList.toggle("usr", st.state === "user");
+    b.classList.toggle("unsup", st.unsupported.length > 0);
     b.classList.toggle("pflag", m.piano_ok === false);
     b.classList.toggle("edited", !!m.edited);
     b.classList.toggle("stale", !!m.stale);
@@ -1219,15 +1248,73 @@ function drawMarks() {
   });
 }
 
+// ---- 읽은 음 보기 (P3-3): 앱이 읽은 음이름을 악보의 음표 위에 겹쳐 보여 준다 → 박자 합은 맞는데 음이 틀린 곳을 눈으로 찾는다.
+// 보여 주는 것은 지금 소리 나는 음(고친 내용이 반영된 것)이고, 키를 옮겨 듣고 있어도 악보에 적힌 높이 그대로다.
+// 노래 줄만 보여 준다(피아노 줄까지 넣으면 악보가 가려진다). 노래 줄이 없는 곡은 모든 줄.
+// 한 박에 여러 음이 있으면 가장 높은 음은 머리 위, 가장 낮은 음은 머리 아래, 사이의 음은 머리 옆에 둔다.
+// 옆 이름표와 붙어서 겹칠 것 같으면 한 칸 더 띄운다(두 줄로 엇갈린다).
+function drawNames() {
+  const c = cur;
+  for (const el of c.names.els) el.remove();
+  c.names.els = [];
+  $("namesBtn").classList.toggle("on", c.names.on);
+  if (!c.names.on) return;
+  const parts = vocalParts().length ? vocalParts() : c.song.parts;
+  const wide = 10 * 2.3;                                  // 이름표의 대강의 너비(px). 글자 크기는 확대와 무관하게 10px 이다
+  parts.forEach((p, pi) => {
+    const last = {};                                      // 이 줄에서 바로 앞 이름표: 놓인 곳(위/아래)마다 { 쪽, 가로(px), 띄웠는지 }
+    const groups = new Map();
+    for (const x of p.notes) { const k = x.m + "|" + Math.round(x.beat * 1000); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+    for (const g of groups.values()) {
+      g.sort((a, b) => b.midi - a.midi);
+      g.forEach((x, i) => {
+        const m = c.song.measures[x.m], pg = c.pages.get(m.page);
+        if (!pg || typeof x.x !== "number" || typeof x.y !== "number") return;
+        const where = i === 0 ? "above" : i === g.length - 1 ? "below" : "side";
+        const s = document.createElement("span");
+        s.className = `nname p${pi % 4} ${where}` + (x.edited ? " edited" : "");
+        s.textContent = E.noteName(x.midi);
+        s.style.left = (x.x / pg.w * 100) + "%";
+        s.style.top = (x.y / pg.h * 100) + "%";
+        if (where !== "side") {
+          const px = x.x / pg.w * (pg.el.clientWidth || pg.w), y = Math.round(x.y), prev = last[where];
+          const near = prev && prev.page === m.page && Math.abs(prev.y - y) < 40 && Math.abs(px - prev.px) < wide;
+          const far = near && !prev.far;
+          if (far) s.classList.add("far");
+          last[where] = { page: m.page, px, y, far };
+        }
+        pg.ov.append(s);
+        c.names.els.push(s);
+      });
+    }
+  });
+}
+$("namesBtn").onclick = () => { if (!cur) return; cur.names.on = !cur.names.on; drawNames(); };
+
 // 고친 결과를 기록하고(기기에 저장), 곡·재생기·화면을 새로 맞춘다
 function commit(partId, mi, notes, selIdx) {
   const c = cur;
   placeAdded(partId, mi, notes);
   E.setMeasure(c.rec.edits, c.rec.song, partId, mi, notes, wantEngine(c.rec));
+  E.syncVoices(c.rec.edits, c.rec.song, partId, mi, notes);      // 성부를 정해 둔 음을 고쳤으면 지정도 따라가게
   c.song = E.applyEdits(c.rec.song, c.rec.edits);
   c.player.load(c.song);
   c.ed.idx = selIdx;
   refreshBoxes();
+  drawMarks();
+  drawNames();
+  renderPanel();
+  pendingSave = store.putSong(c.rec).then(saveOk, saveFailed);
+}
+
+// 고른 음의 성부를 정한다 ("이 음: 위 / 아래 / 같이"). voice 가 null 이면 정한 것을 지운다(자동)
+function setNoteVoice(voice) {
+  const c = cur, ed = c.ed;
+  const t = E.measureNotes(c.song, ed.part, ed.mi)[ed.idx];
+  if (!t) return;
+  E.setVoice(c.rec.edits, c.rec.song, ed.part, ed.mi, t, voice);
+  c.song = E.applyEdits(c.rec.song, c.rec.edits);
+  c.player.load(c.song);
   drawMarks();
   renderPanel();
   pendingSave = store.putSong(c.rec).then(saveOk, saveFailed);
@@ -1246,13 +1333,13 @@ function edit(fn) {
 
 let autoShift = localStorage.getItem("autoShift") !== "0";
 
-function flagged() { const out = []; cur.song.measures.forEach((m, mi) => { if (!m.ok || m.stale) out.push(mi); }); return out; }
+function flagged() { const out = []; cur.check.measures.forEach((s, mi) => { if (s.state === "unsure") out.push(mi); }); return out; }
 
 function renderPanel() {
   const c = cur, ed = c.ed, root = $("editPanel");
   root.textContent = "";
   const fl = flagged();
-  $("flagInfo").textContent = fl.length ? `확인 필요 ${fl.length}마디` : "확인 필요 마디 없음";
+  $("flagInfo").textContent = stateText(c.rec, c.check);
   $("prevFlag").disabled = $("nextFlag").disabled = !fl.length;
   if (ed.mi < 0) return;
   const m = c.song.measures[ed.mi];
@@ -1280,6 +1367,18 @@ function renderPanel() {
     ly.type = "text"; ly.value = t.lyric || ""; ly.placeholder = "가사"; ly.setAttribute("aria-label", "가사");
     ly.onchange = () => edit((ns, i) => E.setField(ns, i, "lyric", ly.value.trim()));
     line(btn("붙임줄", () => edit((ns, i) => E.setField(ns, i, "tie", !ns[i].tie)), "toggle" + (t.tie ? " on" : "")), el("span", "lab", "가사"), ly);
+    // 이 음의 성부: 위·아래로 나눠 들을 때 어느 쪽 음인지. 악보에서 알아낸 것이 틀렸거나 어림한 곳을 직접 정한다
+    const pi = c.player.parts.findIndex((p) => p.id === ed.part), has = pi >= 0 ? c.player.lines[pi] : null;
+    const mine = t.voiceBy === "user" ? t.voice : null;
+    if (has && (has.top || has.mid || has.bottom || mine)) {
+      const how = c.player.voiceOf(ed.part, ed.mi, t.beat, t.midi);
+      const LINE = { one: "같이 부르는 음", top: "위", mid: "가운데", bottom: "아래" }, BY = { guess: " — 어림", unknown: " — 가리지 못함" };
+      const vl = line(el("span", "lab", "이 음의 성부"));
+      for (const [v, name] of [[null, "자동"], ["top", "위"], ...(has.mid || mine === "mid" ? [["mid", "가운데"]] : []), ["bottom", "아래"], ["both", "같이"]]) {
+        vl.append(btn(name, () => setNoteVoice(v), "toggle" + (mine === v ? " on" : "")));
+      }
+      if (how) vl.append(el("span", "lab", mine ? "(직접 정함)" : `지금: ${LINE[how.line] || how.line}${BY[how.by] || ""}`));
+    }
     line(btn("앞에 넣기", () => edit((ns, i) => E.insertNote(ns, i, "before", autoShift))), btn("뒤에 넣기", () => edit((ns, i) => E.insertNote(ns, i, "after", autoShift))),
       btn("화음 음 추가", () => edit((ns, i) => E.insertNote(ns, i, "chord", false))), btn("지우기", () => edit((ns, i) => E.deleteNote(ns, i, autoShift))));
   } else {
@@ -1291,6 +1390,11 @@ function renderPanel() {
       l.append(btn(`${p.name}에 음표 넣기`, () => { ed.part = p.id; ed.idx = -1; edit((ns) => E.insertNote(ns, -1, "empty", false, prev ? prev.midi : 60)); }));
     }
   }
+  // 이 마디가 어떻게 확인된 것인지: 확인 필요(까닭) / 직접 확인함 / 자동 검사만 — 그리고 소리 내지 않는 표기는 따로
+  const ms = c.check.measures[ed.mi];
+  root.append(el("div", "state " + ms.state, ms.state === "unsure" ? "확인 필요: " + ms.why.map((w) => WHY[w] || w).join(" · ")
+    : ms.state === "user" ? `직접 확인한 마디예요${typeof c.rec.edits.checked[m.n] === "string" ? ` (${c.rec.edits.checked[m.n]})` : ""}.` : AUTO_NOTE(c.rec)));
+  if (ms.unsupported.length) root.append(el("div", "state unsup", "소리 내지 않는 표기가 있어요: " + ms.unsupported.map((u) => UNSUP[u] || u).join(", ")));
   const end = E.totalEnd(notes);
   if (notes.length && Math.abs(end - m.len) > 0.002) root.append(el("div", "warn", `이 줄의 음이 ${Math.round(end * 100) / 100}박에서 끝나요 (마디 길이 ${m.len}박).`));
   const chk = el("label", "chk"), cb = el("input");
@@ -1300,13 +1404,12 @@ function renderPanel() {
   const key = E.keyOf(ed.part, m.n), hasOv = !!c.rec.edits.ov[key], checked = !!c.rec.edits.checked[m.n];
   const tools = line(chk);
   if (hasOv) tools.append(btn("이 마디 되돌리기", () => { delete c.rec.edits.ov[key]; ed.idx = -1; commit(ed.part, ed.mi, E.measureNotes(c.rec.song, ed.part, ed.mi).map((x) => ({ ...x })), -1); }));
-  if (!c.rec.song.measures[ed.mi].ok || m.stale || checked) {
-    tools.append(btn(checked ? "확인 완료 취소" : "확인 완료", () => {
-      if (checked) delete c.rec.edits.checked[m.n]; else c.rec.edits.checked[m.n] = new Date().toISOString().slice(0, 10);
-      for (const ov of Object.values(c.rec.edits.ov)) if (ov.n === m.n) delete ov.stale;
-      commit(ed.part, ed.mi, E.measureNotes(c.song, ed.part, ed.mi).map((x) => ({ ...x })), ed.idx);
-    }, "toggle" + (checked ? " on" : "")));
-  }
+  // 자동 검사를 통과한 마디도 원본과 견줘 본 뒤 "확인 완료"로 표시할 수 있다 (자동 검사 통과와 직접 확인은 다른 것이다)
+  tools.append(btn(checked ? "확인 완료 취소" : "확인 완료", () => {
+    if (checked) delete c.rec.edits.checked[m.n]; else c.rec.edits.checked[m.n] = new Date().toISOString().slice(0, 10);
+    for (const ov of Object.values(c.rec.edits.ov)) if (ov.n === m.n) delete ov.stale;
+    commit(ed.part, ed.mi, E.measureNotes(c.song, ed.part, ed.mi).map((x) => ({ ...x })), ed.idx);
+  }, "toggle" + (checked ? " on" : "")));
 }
 
 function jumpFlag(dir) {

@@ -65,6 +65,7 @@ def find_ties(curves, sysm, heads, events, zone):
         # 겹쳐 적힌 머리는 어느 성부의 붙임줄인지 알 수 없다: 어느 한 짝으로라도 붙임줄이 될 수 있으면 붙임줄로 둔다
         return all(blocked(a, b) for a in twins(h1) for b in twins(h2))
 
+    owners = {}                        # 붙임줄이 시작하는 머리 → (그 곡선, 끝 머리, 그 곡선이 갈 수 있던 다른 짝들)
     for c in curves:
         if not c.fill or c.used or len(c.path) < 3 or c.path[0][0] != "m" or c.path[1][0] != "c":
             continue
@@ -83,24 +84,41 @@ def find_ties(curves, sysm, heads, events, zone):
                   and abs(ys - h.y) <= 1.7 * sp]
         ends = [h for h in heads if not h.grace and -1.5 * sp <= xe - h.x0 <= 0.75 * (h.x1 - h.x0)
                 and abs(ye - h.y) <= 1.7 * sp]
-        best = None
+        # 이 곡선이 이을 수 있는 (시작 머리, 끝 머리) 짝들. 이미 다른 붙임줄이 차지한 머리도 일단 넣는다
+        pairs = []
         for h1 in starts:
-            if h1.tie_out:
-                continue
             for h2 in ends:
-                if h2.tie_in or h2.staff is not h1.staff or h2.pos != h1.pos or h2.x0 <= h1.x0 + 0.5 * (h1.x1 - h1.x0):
+                if h2.staff is not h1.staff or h2.pos != h1.pos or h2.x0 <= h1.x0 + 0.5 * (h1.x1 - h1.x0):
                     continue
                 if any(h.staff is h1.staff and h.pos == h1.pos and h1.x0 + 0.1 < h.x0 < h2.x0 - 0.1 for h in heads):
                     continue
                 if between(h1, h2):
                     continue
-                score = abs(ys - h1.y) + abs(ye - h2.y)
-                if best is None or score < best[0]:
-                    best = (score, h1, h2)
-        if best:
-            _, h1, h2 = best
+                pairs.append((abs(ys - h1.y) + abs(ye - h2.y), h1, h2))
+        pairs.sort(key=lambda t: t[0])
+        free = [t for t in pairs if not t[1].tie_out and not t[2].tie_in]
+        if not free and pairs:
+            # 갈 곳이 다 찼다. 화음의 음마다 붙임줄이 있을 때, 안쪽 음의 짧은 붙임줄이 더 가까운 바깥 음에 먼저 붙어 버린 것일 수 있다:
+            # 그 자리를 차지한 곡선이 다른 빈 짝으로 옮겨 갈 수 있으면 옮기고, 이 곡선이 그 자리를 쓴다
+            for _, h1, h2 in pairs:
+                prev = owners.get(id(h1))
+                if prev is None or prev[1] is not h2:
+                    continue
+                alt = next((t for t in prev[2] if t[1] is not h1 and not t[1].tie_out and not t[2].tie_in), None)
+                if alt is None:
+                    continue
+                _, a1, a2 = alt
+                a1.tie_out, a2.tie_in = True, True
+                a2.tie_from = a1
+                owners[id(a1)] = (prev[0], a2, prev[2])
+                h1.tie_out = h2.tie_in = False       # 아래에서 이 곡선의 것으로 다시 표시한다
+                free = [(0, h1, h2)]
+                break
+        if free:
+            _, h1, h2 = free[0]
             h1.tie_out, h2.tie_in = True, True
             h2.tie_from = h1
+            owners[id(h1)] = (c, h2, pairs)
             c.used = "tie"
             continue
         # 줄 끝에서 다음 줄로 넘어가는 붙임줄 (끝나는 머리가 없다)
@@ -309,6 +327,16 @@ def find_tempos(chars):
     """'음표 = 숫자' → [(x, y, 4분음표 기준 빠르기)]"""
     out = []
     unit = {"q": F(1), "h": F(2), "e": F(1, 2), "w": F(4), "x": F(1, 4)}
+    # 표준(SMuFL) 메트로놈 음표 글자: MuseScore 는 글자용 음악 글꼴(LelandText 등)의 이 글자로 빠르기말의 음표를 찍는다.
+    # 다른 뜻으로는 쓰이지 않는 번호라서 글꼴 이름을 가리지 않는다
+    met = {0xECA2: F(4), 0xECA3: F(2), 0xECA4: F(2), 0xECA5: F(1), 0xECA6: F(1), 0xECA7: F(1, 2), 0xECA8: F(1, 2), 0xECA9: F(1, 4), 0xECAA: F(1, 4)}
+    met_dot = chr(0xECB7)
+
+    def unit_of(c):
+        if len(c.t) == 1 and ord(c.t) in met:
+            return met[ord(c.t)]
+        return unit[c.t] if c.t in unit and is_music_font(c.font) else None
+
     for e in chars:
         if e.t != "=":
             continue
@@ -316,7 +344,7 @@ def find_tempos(chars):
                      key=lambda c: c.x0)
         left = [c for c in row if c.x1 <= e.x0 + 0.5 and e.x0 - c.x1 < 2.2 * e.size]
         right = [c for c in row if c.x0 >= e.x1 - 0.5]
-        note = next((c for c in reversed(left) if c.t in unit and is_music_font(c.font)), None)
+        note = next((c for c in reversed(left) if unit_of(c) is not None), None)
         digits = ""
         prev = e.x1
         for c in right:
@@ -327,8 +355,8 @@ def find_tempos(chars):
                 break
         if note is None or not digits or not (20 <= int(digits) <= 400):
             continue
-        u = unit[note.t]
-        if any(c.t == "." and note.x1 - 0.5 <= c.x0 < e.x0 for c in left):
+        u = unit_of(note)
+        if any(c.t in (".", met_dot) and note.x1 - 0.5 <= c.x0 < e.x0 for c in left):
             u = u * F(3, 2)
         out.append((note.x0, e.oy, float(int(digits) * u)))
     return out

@@ -3,7 +3,10 @@
 // edits = {
 //   ov: { "<파트 id>|<마디 번호>": { part, n, orig: [음표...], now: [음표...], engine, date, stale? } },
 //   checked: { "<마디 번호>": 날짜 }          // 사용자가 "확인 완료"로 표시한 마디
+//   voices: { "<파트 id>|<마디 번호>": [{ beat, midi, voice }] }      // "이 음: 위 / 아래 / 같이"로 정해 준 성부 (없을 수 있다 — 예전 기록)
 // }
+// 성부 지정은 고친 마디(ov)와 따로 둔다: 음은 그대로이므로 마디를 통째로 붙잡아 둘 까닭이 없고, 엔진이 그 마디를 더 잘 읽게 되면 그 덕을 본다.
+// 그 음(같은 박·같은 음높이)이 남아 있는 한 다시 읽어도 유지된다.
 // orig = 고치던 때 엔진이 읽어 둔 그 마디의 음표들, now = 고친 뒤의 음표들.
 // 마디 단위로 통째로 바꿔 끼우기 때문에, 엔진이 다시 읽어도 같은 (파트, 마디)에 그대로 덧씌울 수 있다.
 // 화면·소리와 무관한 순수 계산만 둔다 (web/edits.test.js 가 시험한다).
@@ -52,7 +55,37 @@ export function applyEdits(song, edits) {
     const mi = indexOfMeasure(song, +n);
     if (mi >= 0) { measures[mi].ok = true; measures[mi].checked = true; }
   }
+  // 정해 준 성부: 그 마디의 같은 박·같은 음높이인 음에 붙인다 (엔진이 읽은 성부보다 먼저다). 그 음이 없으면 건너뛴다(기록은 남는다)
+  for (const [k, list] of Object.entries(edits.voices || {})) {
+    const [partId, n] = k.split("|");
+    const mi = indexOfMeasure(song, +n);
+    const p = parts.find((q) => q.id === partId);
+    if (mi < 0 || !p) continue;
+    p.notes = p.notes.map((x) => {
+      if (x.m !== mi) return x;
+      const v = list.find((y) => y.midi === x.midi && Math.abs(y.beat - x.beat) < 0.002);
+      return v ? { ...x, voice: v.voice, voiceBy: "user" } : x;
+    });
+  }
   return { ...song, measures, parts };
+}
+
+// 한 음의 성부를 정한다. voice: "top" | "mid" | "bottom" | "both"(같이 부르는 음) | null(정한 것을 지운다 = 자동)
+export function setVoice(edits, engineSong, partId, mi, note, voice) {
+  const k = keyOf(partId, engineSong.measures[mi].n);
+  const all = edits.voices || (edits.voices = {});
+  const rest = (all[k] || []).filter((y) => !(y.midi === note.midi && Math.abs(y.beat - note.beat) < 0.002));
+  if (voice) rest.push({ beat: r4(note.beat), midi: note.midi, voice });
+  if (rest.length) all[k] = rest.sort((a, b) => a.beat - b.beat || a.midi - b.midi); else delete all[k];
+}
+
+// 마디를 고친 뒤: 그 마디에 남은 음들(notes) 가운데 사용자가 성부를 정해 둔 음(voiceBy === "user")으로 기록을 다시 맞춘다.
+// 음높이·박을 고치면 지정이 따라가고, 음을 지우면 지정도 없어진다
+export function syncVoices(edits, engineSong, partId, mi, notes) {
+  const k = keyOf(partId, engineSong.measures[mi].n);
+  const mine = notes.filter((x) => x.voiceBy === "user" && x.voice).map((x) => ({ beat: r4(x.beat), midi: x.midi, voice: x.voice }));
+  if (mine.length) (edits.voices || (edits.voices = {}))[k] = mine.sort((a, b) => a.beat - b.beat || a.midi - b.midi);
+  else if (edits.voices) delete edits.voices[k];
 }
 
 // 한 마디의 고친 결과를 기록한다. 원래대로 돌아왔으면 기록을 지운다.
@@ -68,6 +101,7 @@ export function setMeasure(edits, engineSong, partId, mi, nowNotes, engineVer, t
 function strip(x) {
   const o = { beat: r4(x.beat), dur: r4(x.dur), midi: x.midi, lyric: x.lyric || "", tie: !!x.tie };
   for (const f of ["x", "y", "page", "slur", "fermata", "added", "voice"]) if (x[f] !== undefined && x[f] !== "" && x[f] !== false) o[f] = x[f];
+  if (x.voiceBy === "user") delete o.voice;            // 사용자가 정한 성부는 edits.voices 에만 둔다 (고친 마디에 굳혀 넣지 않는다)
   return o;
 }
 
@@ -101,6 +135,10 @@ export function exportLog(recs) {
     }
     for (const [n, date] of Object.entries(e.checked)) {
       items.push({ title: rec.title, pdf_sha256: rec.sha256 || null, method: rec.method || null, measure: +n, date, confirmed_ok: true });
+    }
+    for (const [k, list] of Object.entries(e.voices || {})) {       // 사용자가 정해 준 성부: [박, 음높이, 성부]
+      const [part, n] = k.split("|");
+      items.push({ title: rec.title, pdf_sha256: rec.sha256 || null, method: rec.method || null, part, measure: +n, voices: list.map((v) => [v.beat, v.midi, v.voice]) });
     }
   }
   return { what: "악보 연습실에서 사용자가 고친 기록", fields: "original/corrected = [시작 박, 길이(4분=1), 음높이(MIDI), 가사, 붙임줄]", exported: new Date().toISOString(), items };
