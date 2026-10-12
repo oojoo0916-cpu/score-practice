@@ -53,6 +53,7 @@ class Measure:
     first_in_system: bool = False
     last_in_system: bool = False
     pickup: bool = False
+    meter_guess: bool = False                       # 박자표를 아직 하나도 읽지 못해서 4/4로 친 마디
 
     @property
     def vocal(self):
@@ -223,7 +224,8 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
             score.fonts.add(c.font)
 
     heads = [h for h in page_heads if h.system is sysm]
-    dotch = [c for c in zch if (music_map(c.font) or {}).get("dot") == c.t]
+    # 도돌이표의 점을 찾을 때 볼 글자: 점음표의 점(Finale·Sibelius 는 같은 글자를 쓴다)과 도돌이표 전용 점(MuseScore·SMuFL 글꼴)
+    dotch = [c for c in zch if c.t and c.t in ((music_map(c.font) or {}).get("dot"), (music_map(c.font) or {}).get("repeat_dot"))]
     layout.find_barlines(pr, sysm, [h.ch for h in heads], dotch)
     timesigs = marks.find_timesigs(zch, sysm)
     events = notes.build_events(pr, sysm, heads, zch, beams)
@@ -263,6 +265,7 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
         for tx, num, den in timesigs:
             if rx0 - 0.5 * sp <= tx < rx1 - 0.5 * sp:
                 st["meter"] = (num, den)
+                st["meter_seen"] = True
         evs = [e for e in events if e.region == ri and e.kind != "grace"]
         if not evs or right is None:
             continue
@@ -273,7 +276,8 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
                     meter=(num, den), length=length,
                     rep_start=bool(left and left.rep_start), rep_end=bool(right.rep_end),
                     final=bool(right.thick and not right.rep_end and not right.rep_start),
-                    double=bool(right.n >= 2 and not right.thick))
+                    double=bool(right.n >= 2 and not right.thick),
+                    meter_guess=not st.get("meter_seen", False))
         for s in sysm.staves:
             sev = sorted([e for e in evs if e.staff is s], key=lambda e: e.x)
             ok, total = notes.time_events(sev, length)

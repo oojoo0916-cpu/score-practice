@@ -1,5 +1,5 @@
 // 재생기: 음표를 조금 앞서 예약해 두는 방식. 멈춤·이어서·구간 반복·빠르기 변경에도 위치(박)를 잃지 않는다.
-import { unfold, mergedNotes, splitLines, chordEvents, clickEvents, buildTimeline } from "./music.js";
+import { unfold, mergedNotes, voiceLines, voiceKey, chordEvents, clickEvents, buildTimeline, beatPlan, meterKind } from "./music.js";
 
 const AHEAD = 0.35;          // 몇 초 앞까지 미리 예약할지
 const TICK = 30;             // 예약 점검 간격(ms)
@@ -8,7 +8,7 @@ export class Player {
   constructor(song, sound, cfg) {
     this.song = song;
     this.sound = sound;
-    this.cfg = cfg;                       // {ratio, transpose, countIn, metro, style, tracks:{id:{vol,mute,solo}}, loop}
+    this.cfg = cfg;                       // {ratio, transpose, countIn, metro, style, tracks:{id:{vol,mute,solo}}, loop, sub, groups}
     this.pos = 0;                         // 멈춰 있을 때의 위치(곡 처음부터의 박)
     this.playing = false;
     this.onEnd = () => {};
@@ -23,9 +23,10 @@ export class Player {
     this.starts = u.starts;
     this.totalBeats = u.total;
     this.parts = song.parts.filter((p) => p.role === "vocal");
-    this.merged = this.parts.map((p) => mergedNotes(song, p, this.starts));
-    // 한 줄 안의 화음: 위·가운데·아래로 나눠 들을 수 있게 음마다 표시해 둔다. lines[i] = 그 줄에 있는 것 {top, mid, bottom}
-    this.lines = this.merged.map((ns) => splitLines(ns));
+    // 노래 줄마다 성부(위·가운데·아래)로 나눠 둔다. vl[i] = { all: 전체로 들을 때의 음, lines: 성부별 음, has, guess, info } (music.js 의 voiceLines)
+    this.vl = this.parts.map((p) => voiceLines(song, p, this.starts));
+    this.merged = this.vl.map((x) => x.all);
+    this.lines = this.vl.map((x) => x.has);         // lines[i] = 그 줄에 그 성부만의 음이 몇 개 있는지 {top, mid, bottom}
     // 악보에 적힌 피아노 줄(오른손·왼손)은 "piano" 한 트랙으로 묶어 재생한다
     this.pianoNotes = song.parts.filter((p) => p.role === "piano").flatMap((p) => mergedNotes(song, p, this.starts));
     this.hasPiano = this.pianoNotes.length > 0;
@@ -37,24 +38,29 @@ export class Player {
 
   rebuild() {
     const ev = [];
-    this.merged.forEach((ns, i) => {
-      // 줄마다 "전체 / 위만 / 가운데만 / 아래만" (cfg.tracks[id].line). 혼자 울리는 음(같이 부르는 곳)은 어느 쪽을 골라도 낸다
+    this.vl.forEach((vl, i) => {
+      // 줄마다 "전체 / 위만 / 가운데만 / 아래만" (cfg.tracks[id].line). 한 성부를 고르면 그 성부의 음과 같이 부르는 음만 낸다.
+      // 고른 성부가 이 줄에 없어도 전체로 돌아가지 않는다(다른 성부의 음이 섞이지 않게): 같이 부르는 음만 내고, 없다는 것은 missing(id)로 알린다
       const want = (this.cfg.tracks[this.parts[i].id] || {}).line || "all";
-      const pick = want !== "all" && this.lines[i][want] ? want : "all";
-      for (const n of ns) {
-        if (pick !== "all" && n.line !== "one" && n.line !== pick) continue;
+      for (const n of want === "all" ? vl.all : vl.lines[want] || []) {
         ev.push({ b: n.start, d: n.dur, midi: n.midi, tr: this.parts[i].id, v: 0.8, legato: n.slur === "start" || n.slur === "mid" });
       }
     });
     for (const n of this.pianoNotes) ev.push({ b: n.start, d: n.dur, midi: n.midi, tr: "piano", v: 0.62 });
-    ev.push(...chordEvents(this.song, this.starts, this.cfg.style));
-    ev.push(...clickEvents(this.song, this.starts));
+    ev.push(...chordEvents(this.song, this.starts, this.cfg.style, this.beatOpt()));
+    ev.push(...clickEvents(this.song, this.starts, this.beatOpt()));
     ev.sort((a, b) => a.b - b.b);
     this.events = ev;
     this.retime();
   }
 
-  retime() { this.tl = buildTimeline(this.song, this.starts, this.cfg.ratio, this.parts); }
+  // 빠르기 지도. 페르마타는 노래 줄뿐 아니라 피아노 줄에 적힌 것도 반영한다 (노래가 쉬는 동안 피아노가 늘이는 곳)
+  retime() { this.tl = buildTimeline(this.song, this.starts, this.cfg.ratio, this.song.parts.filter((p) => p.role === "vocal" || p.role === "piano")); }
+
+  // 박을 어떻게 칠지: 세분박 듣기(cfg.sub: true | false | 정하지 않음 = 겹박자면 켬·홑박자면 끔), 5/8·7/8 의 묶음(cfg.groups)
+  beatOpt() { return { sub: this.cfg.sub, groups: this.cfg.groups }; }
+  setSub(v) { const beat = this.now(); this.cfg.sub = v; this.rebuild(); this.restartFrom(beat); }
+  setGroup(key, g) { const beat = this.now(); this.cfg.groups = { ...(this.cfg.groups || {}), [key]: g }; this.rebuild(); this.restartFrom(beat); }
 
   // ---- 위치
   kAt(beat) {
@@ -93,13 +99,13 @@ export class Player {
     if (loop && (this.pos < loop[0] - 1e-6 || this.pos >= loop[1] - 1e-6)) this.pos = loop[0];
     let t0 = ctx.currentTime + 0.12;
     if (this.cfg.countIn) {
+      // 시작하는 마디의 박자·묶음·빠르기로 한 마디를 센다 (메트로놈과 같은 박 계산. 못갖춘마디에서 시작해도 박자표대로 한 마디)
       const m = this.measureAt(this.pos);
-      const spb = 60 / (m.bpm * this.cfg.ratio) * (4 / m.meter[1]);
-      const n = m.meter[0] > 4 && m.meter[1] === 8 ? m.meter[0] / 3 : m.meter[0];
-      const step = m.meter[0] > 4 && m.meter[1] === 8 ? spb * 3 : spb;
-      for (let i = 0; i < n; i++) this.sound.click(t0 + i * step, i === 0, "count");
+      const q = 60 / (m.bpm * this.cfg.ratio);                        // 4분음표 하나의 길이(초)
+      const full = meterKind(m.meter) === "unknown" ? m.len : m.meter[0] * 4 / m.meter[1];
+      for (const x of beatPlan({ meter: m.meter, len: full }, this.beatOpt())) this.sound.click(t0 + x.b * q, x.level, "count");
       this.sound.track("count").gain.value = 0.8;
-      t0 += n * step;
+      t0 += full * q;
     }
     this.fromSec = this.tl.secOf(this.pos);
     this.start = t0 - this.fromSec;
@@ -107,9 +113,22 @@ export class Player {
     this.cursor = this.fromSec;
     this.idx = this.lower(this.pos);
     this.endAt = null;
+    this.carry(this.pos, t0);
     this.playing = true;
     this.timer = setInterval(() => this.tick(), TICK);
     this.tick();
+  }
+
+  // 시작하는 자리보다 먼저 시작해서 아직 울리고 있어야 하는 음(긴 음의 중간, 앞 마디에서 붙임줄로 넘어온 음)을 남은 길이만큼 낸다.
+  // 긴 음의 중간에서 이어 재생하거나, 마디를 옮기거나, 재생 중에 빠르기를 바꿨을 때 그 음이 사라지지 않게 한다
+  carry(beat, when) {
+    const tl = this.tl, from = tl.secOf(beat);
+    for (let i = 0; i < this.idx; i++) {
+      const e = this.events[i];
+      if (e.click || e.b + e.d <= beat + 0.05) continue;
+      const loop = this.loopRange();
+      this.sound.note(e.tr, e.midi + this.cfg.transpose, when, Math.min(tl.secOf(e.b + e.d), loop ? tl.secOf(loop[1]) : Infinity) - from, e.v, e.legato);
+    }
   }
 
   lower(beat) {
@@ -137,8 +156,8 @@ export class Player {
         this.idx++;
         if (s < this.cursor - 1e-6) continue;
         const when = this.start + s;
-        if (e.click) this.sound.click(when, e.accent);
-        else this.sound.note(e.tr, e.midi + this.cfg.transpose, when, tl.secOf(e.b + e.d) - s, e.v, e.legato);
+        if (e.click) this.sound.click(when, e.level);
+        else this.sound.note(e.tr, e.midi + this.cfg.transpose, when, Math.min(tl.secOf(e.b + e.d), loop ? limit : Infinity) - s, e.v, e.legato);      // 구간 반복: 구간 끝을 넘는 음은 끝에서 자른다
       }
       this.cursor = upto;
       if (upto < limit - 1e-6) return;
@@ -150,6 +169,7 @@ export class Player {
       this.fromSec = Math.min(this.fromSec, a);
       this.idx = this.lower(loop[0]);
       this.cursor = a;
+      this.carry(loop[0], wrapAt);                          // 구간 처음에 걸쳐 있는 음: 바퀴마다 처음 시작할 때와 같게
     }
   }
 
@@ -189,6 +209,24 @@ export class Player {
   setTranspose(v) { const beat = this.now(); this.cfg.transpose = Math.max(-12, Math.min(12, v)); this.restartFrom(beat); }
 
   setStyle(s) { const beat = this.now(); this.cfg.style = s; this.rebuild(); this.restartFrom(beat); }
+
+  // 그 줄에서 고른 성부가 이 줄에 없는가 (전체를 골랐으면 언제나 false)
+  missing(id) {
+    const i = this.parts.findIndex((p) => p.id === id), want = (this.cfg.tracks[id] || {}).line || "all";
+    return i >= 0 && want !== "all" && !this.vl[i].has[want];
+  }
+
+  // 그 줄에서 성부를 어림했거나 가리지 못한 마디들 (song.measures 의 순서 번호)
+  guessMeasures(id) {
+    const i = this.parts.findIndex((p) => p.id === id);
+    return i >= 0 ? this.vl[i].guess : [];
+  }
+
+  // 한 음이 어느 성부로 갔는지 { line: "one"(같이) | "top" | "mid" | "bottom", by: 어떻게 정했는지 }. 모르면 null
+  voiceOf(id, m, beat, midi) {
+    const i = this.parts.findIndex((p) => p.id === id);
+    return (i >= 0 && this.vl[i].info.get(voiceKey(m, beat, midi))) || null;
+  }
 
   // 한 줄 안의 화음에서 어느 쪽을 들을지: "all" | "top" | "mid" | "bottom"
   setLine(id, line) {

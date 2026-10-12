@@ -6,6 +6,7 @@ import * as E from "./edits.js";
 import * as MX from "./musicxml.js";
 import * as XV from "./xmlview.js";
 import * as OFF from "./offline.js";
+import { meterKind, GROUPS, parseChord } from "./music.js";
 
 const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/";
 const MAX_PIXELS = 3.2e6;               // 쪽 하나를 그릴 때 점 개수 상한 (폰 메모리 보호)
@@ -79,7 +80,9 @@ async function showLibrary() {
     const how = s.method ? `${s.method}${s.readSec ? ` ${s.readSec}초` : ""} · ` : "";
     const pn = s.stats.piano_need_check || 0;
     const ne = s.edits ? Object.keys(s.edits.ov).length : 0;
-    sp.textContent = `${how}${s.stats.pages}쪽 ${s.stats.measures}마디 · 확인 필요 ${need}마디${pn ? ` · 반주 어림 ${pn}마디` : ""}${ne ? ` · 고친 곳 ${ne}` : ""}`;
+    // 박자표·빠르기를 악보에서 읽지 못해 4/4·♩=72 로 친 곡은 그렇다고 알려 준다 (조용히 가정하지 않는다)
+    const guess = (s.stats.meter_guess ? " · 박자표를 못 읽음(4/4로 침)" : "") + (s.stats.tempo_found === false ? " · 빠르기 추정(♩=72)" : "");
+    sp.textContent = `${how}${s.stats.pages}쪽 ${s.stats.measures}마디 · 확인 필요 ${need}마디${pn ? ` · 반주 어림 ${pn}마디` : ""}${ne ? ` · 고친 곳 ${ne}` : ""}${guess}`;
     open.append(b, sp);
     open.onclick = () => openSong(s.id);
     const del = document.createElement("button");
@@ -243,6 +246,9 @@ function askMore(j) {
   $("slowText").textContent = `악보를 읽는 데 오래 걸리고 있어요 (${j.pages ? j.pages + "쪽, " : ""}${sec}초째). 더 기다릴까요?`;
   $("slowAsk").hidden = false;
   $("cancelBtn").hidden = true;                  // 취소는 물음 안의 단추로
+  // 끝없이 기다리지는 않는다: 대답이 없으면 같은 시간만큼만 더 기다린 뒤 멈춘다 (화면을 꺼 둔 채 엔진이 멈춰 있는 경우)
+  clearTimeout(j.timer);
+  j.timer = setTimeout(() => stopEngine(new Error("악보를 읽는 데 너무 오래 걸려서 멈췄어요. 다시 올려 보시고, 계속 그러면 쪽 수가 적은 파일로 나눠 올려 주세요.")), readLimit(j.pages));
 }
 $("waitMoreBtn").onclick = () => {
   const j = slowJob;
@@ -323,8 +329,8 @@ async function offlineNote(msg) {
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
-const ENGINE = 11;
-const XMLV = 6;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
+const ENGINE = 16;
+const XMLV = 8;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
 
@@ -827,7 +833,8 @@ function showPos() {
     const pass = c.song.order.slice(0, k + 1).filter((x) => x === mi).length;
     $("pWhere").textContent = `마디 ${m.n} / ${c.song.measures.length}${pass > 1 ? ` (${pass}번째)` : ""}`;
     const tv = $("tempoVal");                          // 숫자를 직접 입력하는 중에는 단추가 잠시 없다
-    if (tv) tv.textContent = "♩=" + Math.round(pl.bpmHere());
+    if (tv) tv.textContent = tempoText(m, Math.round(pl.bpmHere()));
+    $("meterNow").textContent = meterText(m);
     const sys = m.page + ":" + m.system;
     if (sys !== c.lastSys || zoom > 1) { c.lastSys = sys; if (pl.playing) scrollToMeasure(k); }
     if (pl.playing) save();
@@ -906,11 +913,25 @@ function refreshLoop() {
   } else { b.classList.remove("on"); b.textContent = "구간 반복"; }
 }
 
+// 지금 마디의 박자표 글자. 엔진이 박자표를 읽지 못해 4/4로 친 마디는 "(추정)", 분모가 5인 박자처럼 알 수 없는 것은 "읽지 못한 박자"
+function meterText(m) {
+  if (meterKind(m.meter) === "unknown") return "읽지 못한 박자";
+  return `${m.meter[0]}/${m.meter[1]}` + (m.meter_guess ? " (추정)" : "");
+}
+// 빠르기 글자. 조절은 언제나 ♩= 기준이고, 겹박자(6/8·9/8·12/8) 마디에서는 점4분 기준을 같이 보여 준다: ♩.=40 (♩=60)
+function tempoText(m, bpm) {
+  const t = meterKind(m.meter) === "compound" ? `♩.=${Math.round(bpm * 2 / 3)} (♩=${bpm})` : "♩=" + bpm;
+  // 악보에서 빠르기를 읽지 못해 ♩=72 로 친 곡: 손대기 전에는 "추정"이라고 붙인다
+  return cur && cur.song && cur.song.tempo_found === false && cur.cfg && cur.cfg.ratio === 1 ? t + " (추정)" : t;
+}
+const measureNow = (c) => c.player.measureAt(c.player.now());
+
 function refreshAll() {
   const c = cur;
   if (!c) return;
   refreshPlay(); refreshLoop();
-  if ($("tempoVal")) $("tempoVal").textContent = "♩=" + Math.round(c.player.bpmHere());
+  if ($("tempoVal")) $("tempoVal").textContent = tempoText(measureNow(c), Math.round(c.player.bpmHere()));
+  $("meterNow").textContent = meterText(measureNow(c));
   const t = c.cfg.transpose;
   $("keyVal").textContent = t === 0 ? "원키" : (t > 0 ? "+" : "−") + Math.abs(t);
   $("countBtn").classList.toggle("on", c.cfg.countIn);
@@ -959,7 +980,7 @@ function setBpm(v) {
   const c = cur;
   v = Math.max(20, Math.min(300, Math.round(v)));
   c.shownBpm = v;
-  if ($("tempoVal")) $("tempoVal").textContent = "♩=" + v;
+  if ($("tempoVal")) $("tempoVal").textContent = tempoText(measureNow(c), v);
   clearTimeout(bpmApply);                          // 꾹 누르는 동안은 숫자만 바꾸고, 손을 떼면 소리에 반영
   bpmApply = setTimeout(() => { if (cur !== c) return; c.player.setBpm(v); c.shownBpm = null; save(); }, 160);
 }
@@ -1011,6 +1032,27 @@ function buildMixer() {
       b.className = "toggle" + (c.cfg.metro ? " on" : ""); b.textContent = "켜기";
       b.onclick = () => { c.cfg.metro = !c.cfg.metro; b.classList.toggle("on", c.cfg.metro); c.player.applyMix(); refreshAll(); save(); };
       btns.append(b);
+      // 세분박 듣기: 정하지 않았으면(자동) 겹박자 마디에서만 8분음표를 친다. 한 번 누르면 그 뒤로는 고른 대로(곡마다 저장) — 박자가 바뀌어도 그대로 둔다
+      const kindNow = meterKind(measureNow(c).meter), auto = c.cfg.sub === undefined || c.cfg.sub === null;
+      const subOn = auto ? kindNow === "compound" : c.cfg.sub;
+      const sb = document.createElement("button");
+      sb.className = "toggle" + (subOn ? " on" : ""); sb.id = "subBtn";
+      sb.textContent = "세분박" + (auto ? " (자동)" : "");
+      sb.onclick = () => { c.player.setSub(!subOn); save(); buildMixer(); };
+      btns.append(sb);
+      const kinds = new Set(c.song.measures.map((m) => meterKind(m.meter) === "odd" ? `${m.meter[0]}/${m.meter[1]}` : ""));
+      for (const key of Object.keys(GROUPS)) {
+        if (!kinds.has(key)) continue;
+        const sel = document.createElement("select");
+        sel.setAttribute("aria-label", key + " 묶음");
+        const chosen = c.cfg.groups && c.cfg.groups[key];
+        for (const g of GROUPS[key]) { const o = document.createElement("option"); o.value = g; o.textContent = `${key} ${g}` + (!chosen && g === GROUPS[key][0] ? " (추정)" : ""); sel.append(o); }
+        sel.value = chosen || GROUPS[key][0];
+        sel.onchange = () => { c.player.setGroup(key, sel.value); save(); buildMixer(); };
+        btns.append(sel);
+      }
+      r.note = (kindNow === "odd" ? "5/8·7/8 마디는 세분박 단추와 상관없이 8분음표마다 쳐요. " : "")
+        + (auto ? "세분박 (자동): 6/8·12/8 같은 겹박자 마디에서만 8분음표를 쳐요." : `세분박을 ${c.cfg.sub ? "켰어요: 모든 마디에서 박 사이도 쳐요" : "껐어요: 큰 박만 쳐요"}.`);
     } else {
       if (r.id === "chord") {
         const sel = document.createElement("select");
@@ -1019,6 +1061,9 @@ function buildMixer() {
         sel.value = c.cfg.style;
         sel.onchange = () => { c.player.setStyle(sel.value); save(); };
         btns.append(sel);
+        // 해석하지 못한 코드 이름(읽다가 깨진 글자 등): 그럴듯한 화음으로 바꿔 치지 않고 그 자리는 비운다 → 어떤 이름인지 알려 준다
+        const bad = [...new Set(c.song.measures.flatMap((m) => m.chords.map((x) => x.name)).filter((n) => n && !/^N\.?C\.?$/i.test(n) && !parseChord(n)))];
+        if (bad.length) r.note = `해석 못 한 코드: ${bad.slice(0, 8).join(", ")}${bad.length > 8 ? " 등" : ""} — 이 코드 자리는 반주가 나지 않아요.`;
       }
       btns.append(mk("끄기", "mute"), mk("혼자", "solo"));
     }
@@ -1027,26 +1072,30 @@ function buildMixer() {
     vol.setAttribute("aria-label", r.name + " 볼륨");
     vol.oninput = () => { t.vol = vol.value / 100; c.player.applyMix(); save(); };
     row.append(name, btns);
+    if (r.note) { const d = document.createElement("small"); d.className = "mixnote"; d.textContent = r.note; row.append(d); }
     // 이 노래 줄에 음이 겹치는 곳(화음·두 성부)이 있으면 위·아래를 골라 들을 수 있다
     const pi = c.player.parts.findIndex((p) => p.id === r.id);
     const has = pi >= 0 ? c.player.lines[pi] : null;
-    if (has && has.top && has.bottom) {
+    const want = (t && t.line) || "all";
+    if (has && ((has.top && has.bottom) || want !== "all")) {
       const seg = document.createElement("div");
       seg.className = "seg";
       seg.setAttribute("role", "group");
       seg.setAttribute("aria-label", r.name + "에서 들을 성부");
-      const cur0 = t.line && (t.line === "all" || has[t.line]) ? t.line : "all";
-      for (const [v, l] of [["all", "전체"], ["top", "위만"], ...(has.mid ? [["mid", "가운데만"]] : []), ["bottom", "아래만"]]) {
+      const names = { all: "전체", top: "위만", mid: "가운데만", bottom: "아래만" };
+      for (const v of ["all", "top", ...(has.mid || want === "mid" ? ["mid"] : []), "bottom"]) {
         const b = document.createElement("button");
-        b.className = "toggle" + (v === cur0 ? " on" : ""); b.textContent = l; b.dataset.v = v;
-        b.onclick = () => {
-          c.player.setLine(r.id, v);
-          for (const x of seg.children) x.classList.toggle("on", x.dataset.v === v);
-          save();
-        };
+        b.className = "toggle" + (v === want ? " on" : ""); b.textContent = names[v]; b.dataset.v = v;
+        b.onclick = () => { c.player.setLine(r.id, v); save(); buildMixer(); };
         seg.append(b);
       }
       row.append(seg);
+      const note = (text, warn) => { const d = document.createElement("small"); d.className = "mixnote" + (warn ? " warn" : ""); d.textContent = text; row.append(d); };
+      // 고른 성부가 이 줄에 없다: 전체로 돌아가지 않는다 (다른 성부의 음이 섞이지 않게) → 같이 부르는 음만 나고, 그렇다고 알려 준다
+      if (c.player.missing(r.id)) note(`이 줄에는 그 성부(${names[want].replace("만", "")})가 없어요. 같이 부르는 음만 들려요.`, true);
+      // 성부를 악보에서 알아내지 못해 어림한 마디 (쉼표 정보가 없는 곡, 성부가 하나씩 쌓이는 마디 등)
+      const gm = c.player.guessMeasures(r.id).map((mi) => c.song.measures[mi].n);
+      if (gm.length) note(`성부를 어림한 마디: ${gm.slice(0, 12).join(", ")}${gm.length > 12 ? ` 등 ${gm.length}마디` : ""} — 이 마디들은 위·아래가 틀릴 수 있어요.`);
     }
     row.append(vol);
     root.append(row);

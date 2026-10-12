@@ -87,16 +87,51 @@ function chordName(h) {
 }
 
 // ---------------------------------------------------------------- 연주 순서 (도돌이표, 1·2번 괄호) — 엔진의 play_order 와 같은 규칙
+// 마디에 걸린 진행 기호(marks 의 type "nav") → "dc" "ds" "alfine" "alcoda" "fine" "tocoda" "coda" "segno" 가운데 있는 것
+function navOf(m) {
+  const out = new Set();
+  for (const k of m.marks || []) {
+    if (k.type !== "nav") continue;
+    const t = String(k.text || "").toLowerCase().replace(/[^a-z0-9]/g, "");      // "D.S. al Coda" → "dsalcoda"
+    if (/^(dc|dacapo)/.test(t)) out.add("dc");
+    else if (/^(ds|dalsegno)/.test(t)) out.add("ds");
+    else if (t.startsWith("tocoda")) out.add("tocoda");
+    else if (t === "fine") out.add("fine");
+    else if (t.startsWith("coda")) out.add("coda");
+    else if (t.startsWith("segno")) out.add("segno");
+    if (out.has("dc") || out.has("ds")) for (const x of ["alfine", "alcoda"]) if (t.includes(x)) out.add(x);
+  }
+  return out;
+}
+
 export function playOrder(measures) {
+  // 엔진의 pdfscore/export.py play_order 와 같은 규칙 (같은 표 web/testdata/play_order_cases.json 으로 시험한다):
+  // 되풀이를 마치면 다음 되풀이는 그 다음 마디에서 시작한다(‖: 생략). 2번 괄호가 여러 마디면 끝까지 친다.
+  // D.C.·D.S. 는 그 마디를 친 뒤 한 번만 돌아간다. 돌아간 뒤에는 되풀이를 하지 않고(2번 괄호로), Fine 에서 끝나거나 To Coda → Coda 로 건너뛴다
+  const navs = measures.map(navOf);
   const order = [], done = new Set();
-  let i = 0, start = 0, pass = 1, guard = 0;
-  while (i < measures.length && guard++ < measures.length * 4 + 8) {
+  let i = 0, start = 0, pass = 1, guard = 0, inSecond = false, jumped = false, toCoda = false;
+  while (i < measures.length && guard++ < measures.length * 6 + 16) {
     const m = measures[i];
-    if (m.rep_start && !(order.length && order[order.length - 1] >= i)) { start = i; pass = 1; }
+    if (jumped) pass = 2;
+    else if (inSecond && !m.ending) { inSecond = false; pass = 1; start = i; }
+    if (!jumped && m.rep_start && !(order.length && order[order.length - 1] >= i)) { start = i; pass = 1; }
     if (m.ending && m.ending !== pass) { i++; continue; }
     order.push(i);
-    if (m.rep_end && !done.has(i)) { done.add(i); pass = 2; i = start; continue; }
-    if (m.rep_end || m.ending === 2) pass = 1;
+    if (m.ending === 2) inSecond = true;
+    if (m.rep_end && !jumped) {
+      if (!done.has(i)) { done.add(i); pass = 2; i = start; continue; }
+      pass = 1; start = i + 1;
+    }
+    const nav = navs[i];
+    if (jumped) {
+      if (nav.has("fine") && !toCoda) break;
+      if (nav.has("tocoda") && toCoda) { const coda = navs.findIndex((x) => x.has("coda")); if (coda >= 0) { i = coda; continue; } }
+    } else if (nav.has("dc") || nav.has("ds")) {
+      jumped = true; toCoda = nav.has("alcoda");
+      i = nav.has("dc") ? 0 : Math.max(0, navs.findIndex((x) => x.has("segno")));
+      continue;
+    }
     i++;
   }
   return order;
@@ -108,21 +143,21 @@ export const LAYOUT_W = 800;            // 화면에 그릴 때의 가상 너비
 
 // MusicXML 글자 → { song, stats }. 악보 그림의 자리(쪽·마디 상자·음표 위치)는 화면에 그린 뒤에 채운다.
 // opts.check: 인식 결과(스캔)처럼 틀릴 수 있는 파일 → 어느 파트든 박자 합이 박자표와 다른 마디를 '확인 필요'로 표시한다.
-// 한 오선에 두 성부가 적힌 곳에서 각 음이 위 성부인지 아래 성부인지를 기둥 방향으로 적는다 (x.voice = "top" | "bottom").
-// 엔진(pdfscore/export.py 의 voice_hints)과 같은 규칙: 다른 성부가 쉼표로 쉬는 동안 혼자 나오는 음,
-// 그리고 같이 소리 나는 다른 음이 모두 다른 성부이고 기둥이 반대쪽인 음. 그 밖에는 적지 않는다(재생할 때 음높이로 가른다).
-function voiceHints(notes, rests) {
-  const byM = new Map();
-  const at = (m) => { if (!byM.has(m)) byM.set(m, { n: [], r: [] }); return byM.get(m); };
-  for (const r of rests) at(r.m).r.push(r);
-  for (const x of notes) at(x.m).n.push(x);
-  for (const g of byM.values()) for (const x of g.n) {
-    if (x.stem !== "up" && x.stem !== "down") continue;
-    const hit = (o) => o.beat < x.beat + x.dur - 1e-6 && x.beat < o.beat + o.dur - 1e-6;
-    const ns = g.n.filter((o) => o !== x && hit(o)), rs = g.r.filter((o) => o.v !== x.v && hit(o));
-    if (!ns.length && !rs.length) continue;
-    const opp = x.stem === "up" ? "down" : "up";
-    if (ns.every((o) => o.v !== x.v && o.stem === opp)) x.voice = x.stem === "up" ? "top" : "bottom";
+// 한 오선에 두 성부(이상)가 적힌 마디에서 각 음과 쉼표가 어느 성부의 것인지 적는다 (x.voice = "top" | "mid" | "bottom").
+// MusicXML 에는 성부 번호(<voice>)가 적혀 있으므로 그것을 그대로 쓴다: 그 마디에서 번호가 가장 작은 성부가 위, 가장 큰 성부가 아래,
+// 그 사이는 가운데. 기둥 방향은 보지 않는다 (온음표처럼 기둥이 없거나 성부가 엇갈려도 번호는 분명하다).
+// 그 마디에 성부가 하나뿐이면(쉼표까지 쳐서) 한 성부로 적힌 곳이다 → 적지 않는다 (화음은 재생할 때 음높이로 가른다).
+// PDF 엔진(pdfscore/export.py)은 성부 번호가 없어서 기둥 방향과 쉼표의 높이로 같은 것을 알아낸다 — 곡 자료에 남는 모양(voice, rests)은 같다.
+function voiceLabels(notes, rests) {
+  const all = notes.concat(rests), inM = new Map();
+  for (const x of all) { if (!inM.has(x.m)) inM.set(x.m, new Set()); inM.get(x.m).add(x.v); }
+  const order = new Map();              // 마디 → 그 마디의 성부 번호들 (작은 것부터)
+  for (const [m, set] of inM) if (set.size >= 2) order.set(m, [...set].sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0) || String(a).localeCompare(String(b))));
+  for (const x of all) {
+    const ids = order.get(x.m);
+    if (!ids) continue;
+    const i = ids.indexOf(x.v);
+    x.voice = i === 0 ? "top" : i === ids.length - 1 ? "bottom" : "mid";
   }
 }
 
@@ -145,7 +180,7 @@ export function parse(xml, title, opts = {}) {
   kids(root, "part").forEach((part) => {
     let div = 1, staves = 1, transpose = 0, openEnding = 0;
     const mine = new Map();              // 오선 번호 → 음표들
-    const rests = new Map();             // 오선 번호 → 쉼표들 (두 성부로 적힌 곳에서 누가 쉬는지 보는 데만 쓴다)
+    const rests = new Map();             // 오선 번호 → 쉼표들 (누가 쉬는지 알아야 혼자 나오는 음이 한 성부의 것인지 같이 부르는 음인지 가른다)
     let hasLyric = false;
     kids(part, "measure").forEach((mel, mi) => {
       const M = meas[mi] || (meas[mi] = { number: mel.getAttribute("number"), implicit: mel.getAttribute("implicit") === "yes", content: 0, contents: [],
@@ -153,6 +188,7 @@ export function parse(xml, title, opts = {}) {
       if (openEnding) M.ending = openEnding;
       let t = 0, lastStart = 0, maxT = 0, closeEnding = false;
       const mark = (type, text, beat) => { if (!M.marks.some((k) => k.type === type && Math.abs(k.beat - beat) < 1e-6)) M.marks.push({ type, text, beat }); };
+      const nav = (text, beat) => { if (!M.marks.some((k) => k.type === "nav" && k.text === text)) M.marks.push({ type: "nav", text, beat }); };
       for (const el of mel.children) {
         switch (el.nodeName) {
           case "attributes": {
@@ -178,7 +214,7 @@ export function parse(xml, title, opts = {}) {
             const st = Math.min(staves, Math.max(1, Math.round(num(txt(el, "staff")) || 1)));
             if (kid(el, "rest") && !kid(el, "cue") && d > 0) {
               if (!rests.has(st)) rests.set(st, []);
-              rests.get(st).push({ m: mi, beat: start / div, dur: d / div, v: txt(el, "voice") });
+              rests.get(st).push({ m: mi, beat: start / div, dur: d / div, v: txt(el, "voice") || "1" });
             }
             if (!p || kid(el, "cue") || kid(el, "rest")) break;
             const step = txt(p, "step"), alter = Math.round(num(txt(p, "alter"))), oct = Math.round(num(txt(p, "octave")));
@@ -197,7 +233,7 @@ export function parse(xml, title, opts = {}) {
               name: step + accText(alter) + oct, lyric, page: 1, x: 0, y: 0,
               tie: ties.includes("start"), tied: ties.includes("stop"),
               slur: slurs.includes("start") ? "start" : slurs.includes("stop") ? "end" : "", fermata: !!(nt && kid(nt, "fermata")),
-              v: txt(el, "voice"), stem: txt(el, "stem") });
+              v: txt(el, "voice") || "1" });
             break;
           }
           case "backup": t -= num(txt(el, "duration")); if (t < 0) t = 0; break;
@@ -225,7 +261,10 @@ export function parse(xml, title, opts = {}) {
                 const s = w.textContent.trim();
                 if (/\b(rit|rall|riten)/i.test(s)) mark("rit", s, beat);
                 else if (/a\s*tempo|tempo\s*(i|1|primo)\b/i.test(s)) mark("a_tempo", s, beat);
+                else if (/^(d\.?\s*c\.?|d\.?\s*s\.?|da capo|dal segno|to coda|fine)(\s|$)/i.test(s)) nav(s, beat);      // 진행 기호 → 연주 순서(playOrder)에 쓴다
               }
+              if (kid(dt, "segno")) nav("segno", beat);
+              if (kid(dt, "coda")) nav("Coda", beat);
               const reh = kid(dt, "rehearsal");
               if (reh && reh.textContent.trim() && !M.labels.includes(reh.textContent.trim())) M.labels.push(reh.textContent.trim());
             }
@@ -251,12 +290,15 @@ export function parse(xml, title, opts = {}) {
       M.contents.push(maxT / div);
     });
     const piano = !hasLyric && (staves >= 2 || PIANO_NAME.test(names.get(part.getAttribute("id")) || ""));
+    // 성부 번호는 사보 프로그램이 내보낸 파일에서만 믿는다. 스캔 인식 결과(opts.check)는 성부도 쉼표도 틀릴 수 있어 남기지 않는다(재생할 때 어림한다)
+    const voiced = !piano && !opts.check;
     for (const [s, ns] of mine) {
-      if (!piano && !opts.check) voiceHints(ns, rests.get(s) || []);
-      for (const x of ns) { delete x.v; delete x.stem; }
+      if (voiced) voiceLabels(ns, rests.get(s) || []);
+      for (const x of ns) delete x.v;
     }
     for (let s = 1; s <= staves; s++) {
-      lines.push({ si: si++, xml: part.getAttribute("id"), role: piano ? "piano" : "vocal", label: (names.get(part.getAttribute("id")) || "").replace(/\s+/g, " ").trim(), sub: staves > 1 ? s : 0, notes: mine.get(s) || [] });
+      lines.push({ si: si++, xml: part.getAttribute("id"), role: piano ? "piano" : "vocal", label: (names.get(part.getAttribute("id")) || "").replace(/\s+/g, " ").trim(), sub: staves > 1 ? s : 0, notes: mine.get(s) || [],
+        rests: voiced ? (rests.get(s) || []).map((r) => ({ m: r.m, beat: r.beat, dur: r.dur, ...(r.voice ? { voice: r.voice } : {}) })) : null });
     }
   });
   if (!meas.length) throw new Error("이 MusicXML 파일에는 마디가 없어요");
@@ -293,12 +335,21 @@ export function parse(xml, title, opts = {}) {
     for (const x of l.notes) {
       const id = `${x.m}|${x.beat.toFixed(6)}|${x.midi}`, o = seen.get(id);
       if (!o) seen.set(id, x);
-      else { o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric; if (o.voice !== x.voice) o.voice = "both"; }
+      else {
+        if (o.voice !== x.voice) {
+          // 두 성부의 길이나 붙임줄이 다르면 성부별로 따로 적어 둔다 (한 성부만 골라 들을 때는 그 성부의 길이로 낸다) — 엔진의 to_song 과 같은 규칙
+          const two = [o.voice, x.voice].sort().join() === "bottom,top";
+          if (two && (o.dur !== x.dur || o.tie !== x.tie)) o.vd = { [o.voice]: { dur: o.dur, tie: o.tie }, [x.voice]: { dur: x.dur, tie: x.tie } };
+          o.voice = "both";
+        }
+        o.dur = Math.max(o.dur, x.dur); o.tie = o.tie || x.tie; o.tied = o.tied || x.tied; o.lyric = o.lyric || x.lyric;
+      }
     }
     if (opts.check) for (const x of seen.values()) x.dur = Math.min(x.dur, Math.max(0, measures[x.m].len - x.beat));      // 마디 끝을 넘는 길이는 자른다
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);
     const name = l.role === "piano" ? `피아노 ${k}` : (l.label && !/^(musicxml part|part\s*\d*|voice|staff)$/i.test(l.label) ? l.label + (l.sub ? ` ${l.sub}` : "") : `노래 ${k}`);
-    return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, xml: l.xml, sub: l.sub, notes };
+    const rs = l.rests ? { rests: l.rests.filter((r) => r.dur > 0 && r.beat < measures[r.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat), rest_unsure: [] } : {};
+    return { id: l.role + k, role: l.role, name, verified: true, staff: l.si, xml: l.xml, sub: l.sub, notes, ...rs };
   });
   if (!parts.length) throw new Error("이 MusicXML 파일에는 음표가 없어요");
 

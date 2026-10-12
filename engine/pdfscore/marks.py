@@ -26,6 +26,45 @@ def find_ties(curves, sysm, heads, events, zone):
     sp = sysm.sp
     slurs = []
     last_bar = sysm.bars[-1].x0 if sysm.bars else sysm.x1
+    ev_of, evs_of = {}, {}             # 머리 → 그 머리가 달린 음표(들). 두 성부가 머리 하나를 같이 쓰면 음표가 둘이다
+    for e in events:
+        for h in e.heads:
+            ev_of[id(h)] = e
+            evs_of.setdefault(id(h), []).append(e)
+
+    def between(h1, h2):
+        """h1 과 h2 사이에 같은 성부의 다른 음이 있는가. 있으면 그 곡선은 붙임줄이 아니라 이음줄이다 (도–레–도처럼 같은 음으로 돌아오는 이음줄).
+        다른 성부의 음은 사이에 있어도 된다(한 성부가 붙임줄로 끄는 동안 다른 성부가 움직인다). 다른 성부로 보는 경우:
+        - 기둥이 붙임줄의 두 음과 반대쪽이다
+        - 붙임줄의 음은 기둥이 없는데(온음표) 사이의 음은 기둥이 있다
+        - 사이의 음들의 길이를 다 더해도 붙임줄 첫 음의 길이보다 짧다 (첫 음이 울리는 동안 지나가는 음이다. 같은 성부라면 첫 음이 끝난 뒤에야 나올 수 있다)"""
+        def twins(h):                  # 같은 자리에 겹쳐 적힌 머리들(두 성부가 같은 음: 기둥이 위아래로 둘)의 음표들
+            found = {}
+            for o in heads:
+                if o.staff is h.staff and o.pos == h.pos and abs(o.x0 - h.x0) < 0.6 * sp:
+                    for e in evs_of.get(id(o), []):
+                        found[id(e)] = e
+            return list(found.values()) or [None]
+
+        def blocked(e1, e2):
+            mid = {}
+            for h in heads:
+                if h.grace or h.staff is not h1.staff or h.pos == h1.pos or not (h1.x0 + 0.5 * (h1.x1 - h1.x0) < h.x0 < h2.x0 - 0.1):
+                    continue
+                e = ev_of.get(id(h))
+                if e is None or e is e1 or e is e2 or e1 in evs_of.get(id(h), []) or e2 in evs_of.get(id(h), []):
+                    continue
+                s0, s1, s2 = e.stem, getattr(e1, "stem", None), getattr(e2, "stem", None)
+                if s0 and s1 and s2 and s0["up"] != s1["up"] and s0["up"] != s2["up"]:
+                    continue
+                if s0 and (not s1 or not s2):
+                    continue
+                mid[id(e)] = e
+            return bool(mid) and (e1 is None or sum(e.dur for e in mid.values()) >= e1.dur)
+
+        # 겹쳐 적힌 머리는 어느 성부의 붙임줄인지 알 수 없다: 어느 한 짝으로라도 붙임줄이 될 수 있으면 붙임줄로 둔다
+        return all(blocked(a, b) for a in twins(h1) for b in twins(h2))
+
     for c in curves:
         if not c.fill or c.used or len(c.path) < 3 or c.path[0][0] != "m" or c.path[1][0] != "c":
             continue
@@ -52,6 +91,8 @@ def find_ties(curves, sysm, heads, events, zone):
                 if h2.tie_in or h2.staff is not h1.staff or h2.pos != h1.pos or h2.x0 <= h1.x0 + 0.5 * (h1.x1 - h1.x0):
                     continue
                 if any(h.staff is h1.staff and h.pos == h1.pos and h1.x0 + 0.1 < h.x0 < h2.x0 - 0.1 for h in heads):
+                    continue
+                if between(h1, h2):
                     continue
                 score = abs(ys - h1.y) + abs(ye - h2.y)
                 if best is None or score < best[0]:
@@ -186,9 +227,10 @@ def find_timesigs(chars, sysm):
                 continue
             if c.t in mm["time_digits"]:
                 p = st.pos(c.oy)
-                for k in rows:
-                    if abs(p - k) < 0.35 and st.x0 - 1 <= c.ox <= st.x1 + 3 * st.sp:
-                        rows[k].append(c)
+                # 분자는 넷째 칸(위치 6), 분모는 둘째 칸(위치 2). 글꼴에 따라 그 자리에서 벗어나는 정도가 다르다(glyphs 의 time_tol)
+                k = min(rows, key=lambda k: abs(p - k))
+                if abs(p - k) < mm.get("time_tol", 0.35) and st.x0 - 1 <= c.ox <= st.x1 + 3 * st.sp:
+                    rows[k].append(c)
             elif c.t in mm["time_symbols"] and abs(st.pos(c.oy) - 4) < 0.6 and st.x0 <= c.ox <= st.x1:
                 c.used = "time"
                 out.append((c.ox, *mm["time_symbols"][c.t]))

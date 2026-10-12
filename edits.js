@@ -20,6 +20,11 @@ export function canon(notes) {
     .sort((a, b) => a[0] - b[0] || a[2] - b[2]);
 }
 export const sameNotes = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+// 음 말고 같이 적힌 표시(페르마타·이음줄)까지 같은가. 엔진이 다시 읽은 결과를 견줄 때만 쓴다:
+// 고친 마디는 통째로 바꿔 끼우므로, 엔진이 새로 읽게 된 표시가 있는데 모른 척 덧씌우면 그 표시가 사라진다.
+// 성부 표시(voice)는 넣지 않는다 — 엔진이 성부를 더 알아냈다고 고친 마디를 모두 "다시 확인"으로 올리지 않게.
+const marksOf = (notes) => notes.map((x) => [r4(x.beat), x.midi, !!x.fermata, x.slur || ""]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+const sameMarks = (a, b) => JSON.stringify(marksOf(a)) === JSON.stringify(marksOf(b));
 
 const indexOfMeasure = (song, n) => song.measures.findIndex((m) => m.n === n);
 
@@ -70,14 +75,15 @@ function strip(x) {
 //  - 새 결과가 고치던 때와 같다            → 그대로 덧씌운다
 //  - 새 결과가 고친 것과 같아졌다(엔진 개선) → 고친 기록이 필요 없어져서 지운다 (caughtUp)
 //  - 새 결과가 둘 다와 다르다              → 고친 것을 유지하되 "다시 확인"(stale) 표시를 붙인다
+//  "같다"는 음(박·길이·음높이·가사·붙임줄)과 표시(페르마타·이음줄)가 모두 같다는 뜻이다
 export function reconcile(newSong, edits) {
   const out = { kept: 0, caughtUp: [], stale: [], lost: [] };
   for (const [k, ov] of Object.entries(edits.ov)) {
     const mi = indexOfMeasure(newSong, ov.n);
     if (mi < 0 || !newSong.parts.some((p) => p.id === ov.part)) { ov.stale = true; out.lost.push(k); continue; }
     const fresh = measureNotes(newSong, ov.part, mi);
-    if (sameNotes(fresh, ov.now)) { delete edits.ov[k]; out.caughtUp.push(k); continue; }
-    if (sameNotes(fresh, ov.orig)) { delete ov.stale; out.kept++; continue; }
+    if (sameNotes(fresh, ov.now) && sameMarks(fresh, ov.now)) { delete edits.ov[k]; out.caughtUp.push(k); continue; }
+    if (sameNotes(fresh, ov.orig) && sameMarks(fresh, ov.orig)) { delete ov.stale; out.kept++; continue; }
     ov.stale = true;
     out.stale.push(k);
   }

@@ -67,6 +67,8 @@ SMUFL = {
     "accidentals": {"\ue262": 1, "\ue260": -1, "\ue261": 0, "\ue263": 2, "\ue264": -2},
     "clefs": {"\ue050": "G", "\ue052": "G8", "\ue062": "F", "\ue05c": "C"},
     "dot": "\ue1e7",
+    "repeat_dot": "",                       # 도돌이표의 점 (SMuFL repeatDot). 점음표의 점과 다른 글자다
+    "time_tol": 2.3,                              # 박자표 숫자가 제자리(넷째 칸·둘째 칸)에서 벗어나도 되는 정도. Petaluma 는 숫자가 커서 분자가 반 칸 위, 분모가 한 칸 아래에 찍힌다
     "fermata": "\ue4c0\ue4c1",
     "time_digits": "".join(chr(0xE080 + i) for i in range(10)),
     "digit_map": {chr(0xE080 + i): str(i) for i in range(10)},

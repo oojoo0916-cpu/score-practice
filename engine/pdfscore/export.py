@@ -109,29 +109,81 @@ def stats(score):
         "piano_need_check": len(piano_bad),
         "piano_check_list": piano_bad,
         "warnings": len(score.warnings),
+        "meter_guess": sum(1 for m in ms if getattr(m, "meter_guess", False)),      # 박자표를 읽지 못해 4/4로 친 마디 수
+        "tempo_found": any(m.bpm for m in ms),                                      # 빠르기말(♩=…)을 읽었는가. 못 읽었으면 ♩=72 로 친다
     }
 
 
+def nav_of(m):
+    """마디에 걸린 진행 기호(marks 의 type "nav") → {"dc", "ds", "alfine", "alcoda", "fine", "tocoda", "coda", "segno"} 가운데 있는 것."""
+    out = set()
+    for k in getattr(m, "marks", None) or []:
+        if k.get("type") != "nav":
+            continue
+        t = "".join(ch for ch in str(k.get("text", "")).lower() if ch.isalnum())      # "D.S. al Coda" → "dsalcoda"
+        if t.startswith(("dc", "dacapo")):
+            out.add("dc")
+        elif t.startswith(("ds", "dalsegno")):
+            out.add("ds")
+        elif t.startswith("tocoda"):
+            out.add("tocoda")
+        elif t == "fine":
+            out.add("fine")
+        elif t.startswith("coda"):
+            out.add("coda")
+        elif t.startswith("segno"):
+            out.add("segno")
+        if out & {"dc", "ds"}:
+            out |= {x for x in ("alfine", "alcoda") if x in t}
+    return out
+
+
 def play_order(measures):
-    """악보 순서 → 실제 연주 순서 (도돌이표, 1·2번 괄호)."""
+    """악보 순서 → 실제 연주 순서 (도돌이표, 1·2번 괄호, D.C.·D.S.·Fine·Coda). 앱의 web/musicxml.js playOrder 와 같은 규칙이다 (같은 표로 시험한다).
+    - 되풀이를 마치면 다음 되풀이는 그 다음 마디에서 시작한다 (시작 표시 ‖: 가 생략된 A :‖ B :‖ → A A B B)
+    - 2번 괄호가 여러 마디면 끝까지 친다. 2번 괄호를 다 지나면 되풀이가 끝난 것이다
+    - D.C.(처음으로)·D.S.(segno 로)는 그 마디를 친 뒤에 한 번만 돌아간다. 돌아간 뒤에는 되풀이를 하지 않고(2번 괄호로),
+      Fine 이 있는 마디에서 끝나거나(al Coda 가 아니면), To Coda 마디를 친 뒤 Coda 마디로 건너뛴다(al Coda)"""
+    navs = [nav_of(m) for m in measures]
     order, i, start, pass_no, done = [], 0, 0, 1, set()
+    in_second = jumped = False
+    to_coda = False
     guard = 0
-    while i < len(measures) and guard < len(measures) * 4 + 8:
+    while i < len(measures) and guard < len(measures) * 6 + 16:
         guard += 1
         m = measures[i]
-        if m.rep_start and not (order and order[-1] >= i):
+        if jumped:
+            pass_no = 2
+        elif in_second and not m.ending:
+            in_second, pass_no, start = False, 1, i
+        if not jumped and m.rep_start and not (order and order[-1] >= i):
             start, pass_no = i, 1
         if m.ending and m.ending != pass_no:
             i += 1
             continue
         order.append(i)
-        if m.rep_end and i not in done:
-            done.add(i)
-            pass_no = 2
-            i = start
+        if m.ending == 2:
+            in_second = True
+        if m.rep_end and not jumped:
+            if i not in done:
+                done.add(i)
+                pass_no = 2
+                i = start
+                continue
+            pass_no, start = 1, i + 1
+        nav = navs[i]
+        if jumped:
+            if "fine" in nav and not to_coda:
+                break
+            if "tocoda" in nav and to_coda:
+                coda = next((k for k, x in enumerate(navs) if "coda" in x), None)
+                if coda is not None:
+                    i = coda
+                    continue
+        elif nav & {"dc", "ds"}:
+            jumped, to_coda = True, "alcoda" in nav
+            i = 0 if "dc" in nav else next((k for k, x in enumerate(navs) if "segno" in x), 0)
             continue
-        if m.rep_end or m.ending == 2:
-            pass_no = 1
         i += 1
     return order
 
@@ -144,7 +196,8 @@ def voice_hints(sd):
     - 같이 소리 나는 다른 음이 모두 기둥이 반대쪽인 음 (아래 성부가 위 성부보다 높이 올라가 엇갈려도 맞게 갈린다)
     아무것과도 겹치지 않는 음은 한 성부로 적힌 곳이라 기둥 방향이 음높이를 따를 뿐이다 → 적지 않는다.
     기둥 하나에 달린 화음, 기둥이 같은 쪽인 음끼리 겹치는 곳, 기둥 없는 온음표도 적지 않는다 → 앱이 음높이로 가른다(splitLines).
-    기둥이 위아래로 둘 달린 음(둘이 같은 음)은 음 둘로 읽혀 각각 위·아래가 되고, to_song 이 하나로 합치면서 "both"로 적는다."""
+    기둥이 위아래로 둘 달린 음(둘이 같은 음)은 음 둘로 읽혀 각각 위·아래가 되고, to_song 이 하나로 합치면서 "both"로 적는다
+    (두 성부의 길이·붙임줄이 다르면 "vd"에 성부별로 남긴다)."""
     if not sd.ok or sd.approx:
         return {}
     evs = [e for e in sd.events if e.beat is not None and e.kind in ("note", "rest")]
@@ -159,9 +212,48 @@ def voice_hints(sd):
     return out
 
 
+def _rest_height(e):
+    """쉼표가 오선 가운뎃줄에서 몇 칸 떨어져 있는지 (−는 위, +는 아래). 오선을 모르면 None."""
+    lines, sp = getattr(e.staff, "lines", None), getattr(e.staff, "sp", 0)
+    if not lines or len(lines) < 3 or not sp:
+        return None
+    return (e.y - lines[2]) / sp
+
+
+def rest_voices(staves):
+    """쉼표가 위 성부의 것인지 아래 성부의 것인지를 오선 안의 높이로 알아낸다. → {id(쉼표): "top" | "bottom"}
+    한 오선에 두 성부를 적을 때는 위 성부의 쉼표를 제자리보다 위로, 아래 성부의 쉼표를 아래로 옮겨 적는다.
+    제자리는 쉼표 종류(글자)와 글꼴에 따라 다르므로, 이 악보에서 그 종류의 쉼표가 가장 많이 놓인 높이를 제자리로 본다
+    (가운뎃줄에서 1.5칸 안쪽에 있는 것들 중에서. 그런 것이 하나도 없으면 가운뎃줄).
+    제자리에서 0.75칸 이상 벗어난 쉼표만 적는다 — 제자리의 쉼표는 누구의 것인지 알 수 없다(한 성부로 적힌 곳이 대부분이다)."""
+    seen = {}
+    for sd in staves:
+        for e in sd.events:
+            if e.kind != "rest":
+                continue
+            h = _rest_height(e)
+            if h is not None:
+                seen.setdefault(getattr(e.ch, "t", None) or str(e.base), []).append((e, h))
+    out = {}
+    for items in seen.values():
+        near = {}
+        for _, h in items:
+            if abs(h) <= 1.5:
+                k = round(h * 2) / 2
+                near[k] = near.get(k, 0) + 1
+        normal = max(near, key=lambda k: (near[k], -abs(k))) if near else 0.0
+        for e, h in items:
+            if h - normal <= -0.75:
+                out[id(e)] = "top"
+            elif h - normal >= 0.75:
+                out[id(e)] = "bottom"
+    return out
+
+
 def to_song(score, title):
     ms = score.measures
     first_bpm = next((m.bpm for m in ms if m.bpm), None)
+    rest_of = rest_voices([sd for m in ms for sd in m.staves if sd.role == "vocal" and not sd.absent])
     out_m = []
     for m in ms:
         out_m.append({
@@ -176,6 +268,8 @@ def to_song(score, title):
             "marks": [{"type": k["type"], "text": k["text"], "beat": float(k["beat"])} for k in m.marks],
             "labels": m.labels,
         })
+        if getattr(m, "meter_guess", False):
+            out_m[-1]["meter_guess"] = True       # 박자표를 읽지 못해 4/4로 쳤다 (앱이 "추정"으로 보여 준다)
     parts = {}
     for mi, m in enumerate(ms):
         for sd in m.staves:
@@ -184,6 +278,19 @@ def to_song(score, title):
                                        "name": ("노래 " if sd.role == "vocal" else "피아노 ") + str(sd.line + 1),
                                        "notes": []})
             hints = voice_hints(sd) if sd.role == "vocal" else {}
+            if sd.role == "vocal" and not sd.absent:
+                # 쉼표도 남긴다: 누가 쉬는지 알아야 "혼자 나오는 음"이 한 성부의 것인지 같이 부르는 음인지 가를 수 있다.
+                # 박자 합이 안 맞는 마디는 박 위치를 믿을 수 없으니 남기지 않고, 그런 마디라고 따로 적는다
+                rests, unsure = p.setdefault("rests", []), p.setdefault("rest_unsure", [])
+                if sd.ok and not sd.approx:
+                    for e in sd.events:
+                        if e.kind == "rest" and e.beat is not None:
+                            r = {"m": mi, "beat": float(e.beat), "dur": float(e.dur)}
+                            if id(e) in rest_of:
+                                r["voice"] = rest_of[id(e)]            # 위 성부의 쉼표 / 아래 성부의 쉼표
+                            rests.append(r)
+                else:
+                    unsure.append(mi)
             for e in sd.events:
                 if e.kind != "note" or e.beat is None:
                     continue
@@ -207,12 +314,16 @@ def to_song(score, title):
             if o is None:
                 seen[k] = n
             else:
+                vo, vn = o.get("voice"), n.get("voice")
+                if vo != vn:
+                    # 두 성부의 길이나 붙임줄이 다르면 성부별로 따로 적어 둔다 (한 성부만 골라 들을 때는 그 성부의 길이로 낸다)
+                    if {vo, vn} == {"top", "bottom"} and (o["dur"] != n["dur"] or o["tie"] != n["tie"]):
+                        o["vd"] = {vo: {"dur": o["dur"], "tie": o["tie"]}, vn: {"dur": n["dur"], "tie": n["tie"]}}
+                    o["voice"] = "both"            # 두 성부가 같은 음: 어느 쪽을 골라 들어도 낸다
                 o["dur"] = max(o["dur"], n["dur"])
                 o["tie"] = o["tie"] or n["tie"]
                 o["tied"] = o["tied"] or n["tied"]
                 o["lyric"] = o["lyric"] or n["lyric"]
-                if o.get("voice") != n.get("voice"):
-                    o["voice"] = "both"            # 두 성부가 같은 음: 어느 쪽을 골라 들어도 낸다
         p["notes"] = list(seen.values())
         p["verified"] = p["role"] == "vocal"       # 피아노 줄은 아직 검증하지 않은 참고용
     return {

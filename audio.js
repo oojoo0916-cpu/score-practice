@@ -113,12 +113,14 @@ export class Sound {
     src.onended = () => { this.live.delete(item); g.disconnect(); };
   }
 
-  click(when, accent, trackId = "metro") {
+  // level: 2 강(마디 첫 박) · 1 중(겹박자의 큰 박, 묶음의 첫 박) · 0 약. 예전처럼 true/false 로 불러도 된다
+  click(when, level, trackId = "metro") {
     const ctx = this.ctx;
     const o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.value = accent ? 1760 : 1175;
+    const lv = level === true ? 2 : level === false || level == null ? 0 : level;
+    o.frequency.value = [1175, 1480, 1760][lv];
     g.gain.setValueAtTime(0.0001, when);
-    g.gain.exponentialRampToValueAtTime(accent ? 0.9 : 0.6, when + 0.002);
+    g.gain.exponentialRampToValueAtTime([0.6, 0.75, 0.9][lv], when + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
     o.connect(g).connect(this.track(trackId));
     o.start(when); o.stop(when + 0.07);
