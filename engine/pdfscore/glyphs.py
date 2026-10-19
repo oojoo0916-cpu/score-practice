@@ -118,6 +118,26 @@ def learn_fonts(counts):
             _LEARNED[f] = MAESTRO
 
 
+# 쪽마다: 잇단음표 숫자(2·3·5·6·7)만 찍힌 글꼴. "Microsoft Print to PDF"로 뽑은 PDF는 글꼴 이름이 'F4' 처럼 지워져 있어서
+# 이름(Italic 등)으로는 셋잇단 숫자를 알아볼 수 없다 → 그 쪽에서 그 글꼴로 찍힌 글자가 전부 잇단음표 숫자 한 글자씩이면 잇단음표 글꼴로 본다.
+# (마디 번호 글꼴은 1·4·8·9나 두 자리 수가 섞여 있어서 걸리지 않는다)
+_TUPLET_ONLY = set()
+
+
+def learn_page_fonts(chars):
+    _TUPLET_ONLY.clear()
+    seen = {}
+    for c in chars:
+        seen.setdefault(c.font, set()).add(c.t)
+    for font, ts in seen.items():
+        if ts and ts <= set("23567") and not is_music_font(font):
+            _TUPLET_ONLY.add(font)
+
+
+def tuplet_only_font(font):
+    return font in _TUPLET_ONLY
+
+
 def chord_map(font):
     return CHORD_FONTS.get(family(font))
 

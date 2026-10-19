@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, field
 from fractions import Fraction as F
 
-from .glyphs import music_map, is_music_font, chord_map, family, TUPLET_FONTS, SMUFL
+from .glyphs import music_map, is_music_font, chord_map, family, TUPLET_FONTS, SMUFL, tuplet_only_font
 
 CHORD_RE = re.compile(
     r"^[A-G][#b]?(?:maj|min|dim|aug|sus|add|M|m|\+|°|ø|o)?[0-9]*"
@@ -178,6 +178,9 @@ def apply_tuplets(chars, sysm, events, beams=()):
         if c.t in "23567" and (family(c.font) in TUPLET_FONTS
                                or ("Italic" in c.font and not is_music_font(c.font) and ("Bold" in c.font or smufl))):
             num[id(c)] = int(c.t)
+        elif c.t in "23567" and tuplet_only_font(c.font) and c.x0 > sysm.x0 + 3 * sp \
+                and not any(o is not c and o.font == c.font and abs(o.oy - c.oy) < 1 and abs(o.cx - c.cx) < 1.2 * c.size for o in chars):
+            num[id(c)] = int(c.t)          # 이름이 지워진 글꼴의 셋잇단 숫자 (한 글자씩 떨어져 있고, 음자리표 자리가 아니다)
         elif len(c.t) == 1 and 0xE882 <= ord(c.t) <= 0xE887 and music_map(c.font) is SMUFL and ord(c.t) - 0xE880 in TUPLET_RATIO:
             num[id(c)] = ord(c.t) - 0xE880
     digs = [c for c in chars if id(c) in num]
@@ -388,6 +391,16 @@ def _split_token(pieces):
     return [(name, cs) for name, cs in groups]
 
 
+def _chord_acc(c):
+    """음악 글꼴로 찍힌 코드 이름의 샵·플랫 → '#'/'b' (아니면 None). Finale(Maestro)는 '#'·'b' 글자, 표준(SMuFL) 글꼴은 따로 번호가 있다."""
+    if not is_music_font(c.font):
+        return None
+    if c.t in "#b":
+        return c.t
+    v = (music_map(c.font) or {}).get("accidentals", {}).get(c.t)
+    return {1: "#", -1: "b"}.get(v)
+
+
 def find_chords(chars, sysm):
     """코드 기호 → [(가운데 x, 코드 이름)].
     이름이 '/F'나 '-3'인 것은 앞 코드에 기대는 표기라서 reader가 앞 코드와 합쳐 완성한다."""
@@ -419,7 +432,7 @@ def find_chords(chars, sysm):
         if c.used or not (top - 10 * sp < c.oy < top - 0.5 * sp) or c.x0 < sysm.x0 - 1:
             continue
         if is_music_font(c.font):
-            if c.t in "#b" and c.size < sysm.sp * 4 * 0.75:
+            if _chord_acc(c) and c.size < sysm.sp * 4 * 0.75:
                 cand.append(c)
         elif "Bold" not in c.font and "Italic" not in c.font and c.t.isascii() and (c.t.isalnum() or c.t in "()/+-#"):
             cand.append(c)
@@ -441,6 +454,15 @@ def find_chords(chars, sysm):
             rows[-1][0] = cy
         else:
             rows.append([cy, [c]])
+    # 표준(SMuFL) 음악 글꼴의 샵·플랫은 기준점이 글자 밑선보다 조금 더 높아서(3pt 남짓) 홀로 한 줄이 된다 → 바로 옆 글자가 있는 줄에 붙인다
+    lone = [r for r in rows if all(is_music_font(c.font) for c in r[1])]
+    for r in lone:
+        c = r[1][0]
+        near = [q for q in rows if q is not r and any(not is_music_font(o.font) for o in q[1])
+                and abs(q[0] - r[0]) < 1.2 * sp and any(-1.0 <= c.x0 - o.x1 <= 2.6 for o in q[1])]
+        if near:
+            min(near, key=lambda q: abs(q[0] - r[0]))[1].extend(r[1])
+            rows.remove(r)
     for _, cs in rows:
         cs.sort(key=lambda c: c.x0)
         cur, x1 = [], None
@@ -448,7 +470,7 @@ def find_chords(chars, sysm):
             if cur and c.x0 - x1 >= 2.6:
                 emit(cur)
                 cur = []
-            cur.append((c.t, c))
+            cur.append((_chord_acc(c) or c.t, c))
             x1 = c.x1 if not cur[:-1] else max(x1, c.x1)
         if cur:
             emit(cur)

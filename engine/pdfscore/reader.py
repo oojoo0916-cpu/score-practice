@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction as F
 
 from . import layout, marks, notes, prims
-from .glyphs import music_map, is_music_font, learn_fonts, family
+from .glyphs import music_map, is_music_font, learn_fonts, learn_page_fonts, family
 
 
 @dataclass
@@ -166,7 +166,43 @@ def _char_systems(pr, systems, zones, heads):
             owner = next((s for s, (lo, hi) in zip(systems, zones) if lo <= c.oy < hi), None)
         if owner is not None:
             out.setdefault(owner.idx, []).append(c)
+    _lyrics_to_upper(systems, heads, out)
     return out
+
+
+def _lyrics_to_upper(systems, heads, out):
+    """가사가 오선에서 멀리 아래에 찍힌 악보(시스템 사이 간격의 40%보다 아래)는 가사 줄이 아래 시스템의 구역에 들어간다.
+    아래 시스템 위쪽(오선보다 위)에 있는 한글 줄이 위 시스템의 음표 밑에 나란히 놓여 있으면 위 시스템의 가사로 옮긴다.
+    (배역 이름처럼 한두 낱말인 글은 그대로 둔다 — 썬탠보이 93·94마디 위의 "강", "성빈")"""
+    for a, b in zip(systems, systems[1:]):
+        sp = a.sp
+        mine = out.get(b.idx, [])
+        rows = {}
+        for c in mine:
+            if not is_music_font(c.font) and a.bottom < c.oy < b.top - 0.5 * sp and c.oy < a.bottom + 12 * sp:
+                rows.setdefault(round(c.oy), []).append(c)
+        xs = [h.cx for h in heads if h.system is a]
+        if not xs:
+            continue
+        for y, row in rows.items():
+            row += [c for c in rows.get(y - 1, []) + rows.get(y + 1, []) if c not in row]
+            # 붙어 찍힌 한글은 한 낱말(배역 이름 "성빈" 등). 가사는 음절마다 떨어져 찍혀서 낱말이 여럿이다
+            han = sorted([c for c in row if marks.is_hangul(c.t)], key=lambda c: c.x0)
+            words = []
+            for c in han:
+                if words and c.x0 - words[-1][-1].x1 < 0.3 * c.size:
+                    words[-1].append(c)
+                else:
+                    words.append([c])
+            if len(words) < 3:
+                continue
+            under = sum(1 for w in words if min(abs((w[0].x0 + w[-1].x1) / 2 - x) for x in xs) <= 1.7 * sp)
+            if under < 0.6 * len(words):
+                continue
+            for c in row:
+                if c in mine:
+                    mine.remove(c)
+                    out.setdefault(a.idx, []).append(c)
 
 
 def _retime_by_x(m, sd, sp):
@@ -516,6 +552,7 @@ def read_pdf(path, first=None, last=None):
                 score.all_music_fonts.add(c.font)
         if (first and pno < first) or (last and pno > last):
             continue
+        learn_page_fonts(pr.chars)
         staves = layout.find_staves(pr)
         score.pages.append({"n": pno, "w": pr.width, "h": pr.height, "music": bool(staves)})
         if not staves:

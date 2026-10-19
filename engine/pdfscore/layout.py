@@ -159,7 +159,11 @@ def _lyrics_between(pr, upper, lower):
     y0, y1 = upper.bottom + 0.5 * sp, lower.top - 0.5 * sp
     cs = sorted([c for c in pr.chars if not music_map(c.font) and y0 < (c.top + c.bottom) / 2 < y1
                  and upper.x0 - sp <= c.x0 <= upper.x1 + sp and c.t.strip()], key=lambda c: c.x0)
-    if sum(1 for c in cs if "가" <= c.t <= "힣") >= 3:
+    han = [c for c in cs if "가" <= c.t <= "힣"]
+    if len(han) >= 3:
+        return True
+    # 합창의 "아 - - - 아" 처럼 글자는 적어도 떨어져 찍힌 음절과 늘임 줄표(-)가 있으면 가사다 (피아노 셈여림말은 붙어 있는 낱말이다)
+    if han and (sum(1 for c in cs if c.t in "-–") >= 2 or (len(han) == 2 and abs(han[0].cx - han[1].cx) > 4 * sp)):
         return True
     words, cur = [], []
     for c in cs:

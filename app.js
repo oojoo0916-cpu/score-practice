@@ -8,9 +8,14 @@ import * as XV from "./xmlview.js";
 import * as OFF from "./offline.js";
 import { meterKind, GROUPS, parseChord, checkState } from "./music.js";
 
-const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/";
+const PDFJS = OFF.PDFJS_LIB.base;           // 악보 화면 도구의 주소 (기기에 맞는 판을 offline.js 가 고른다)
 const MAX_PIXELS = 3.2e6;               // 쪽 하나를 그릴 때 점 개수 상한 (폰 메모리 보호)
 const $ = (id) => document.getElementById(id);
+// 기기에 기억해 두는 작은 설정(확대·재생 위치 표시 등). Safari 에서 "모든 쿠키 차단"을 켜면 읽기만 해도 오류가 나서 앱 전체가 멈췄다 → 못 쓰면 기억하지 않는다
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch (err) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (err) { /* 기억하지 못해도 앱은 그대로 쓴다 */ } },
+};
 const sound = new Sound();
 let worker = null, jobs = new Map(), jobId = 0;
 let cur = null;                         // 열려 있는 곡: {rec, player, doc, pages, boxes, anchors, head, ...}
@@ -70,7 +75,14 @@ async function showLibrary() {
   closeSong();
   $("practice").hidden = true;
   $("library").hidden = false;
-  const songs = (await store.listSongs()).sort((a, b) => (b.openedAt || b.addedAt) - (a.openedAt || a.addedAt));
+  let songs;
+  try { songs = await store.listSongs(); } catch (err) {
+    console.error("보관함을 열지 못함:", err);
+    libStatus("이 브라우저에서는 기기 안에 악보를 저장할 수 없어요. 아이폰·아이패드라면 설정 → 앱 → Safari 에서 \"모든 쿠키 차단\"을 끄고, 개인정보 보호 브라우징이 아닌 보통 창에서 열어 주세요.", true);
+    $("empty").hidden = false;
+    return;
+  }
+  songs.sort((a, b) => (b.openedAt || b.addedAt) - (a.openedAt || a.addedAt));
   $("empty").hidden = songs.length > 0;
   offlineNote();
   const edited = songs.filter((s) => s.edits && (Object.keys(s.edits.ov).length || Object.keys(s.edits.checked).length));
@@ -347,7 +359,7 @@ async function offlineNote(msg) {
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
-const ENGINE = 21;
+const ENGINE = 22;
 const XMLV = 10;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);
@@ -535,7 +547,17 @@ function defaults(song) {
 
 let pdfjsP = null;
 function pdfjs() {
-  pdfjsP = pdfjsP || import(PDFJS + "pdf.min.mjs").then((m) => { m.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.mjs"; return m; });
+  const L = OFF.PDFJS_LIB;
+  // 4판은 모듈(import), 3판(오래된 아이폰·아이패드용)은 보통 스크립트라서 불러온 뒤 window.pdfjsLib 로 꺼낸다
+  const load = () => (L.module ? import(L.base + L.main) : new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = L.base + L.main;
+    s.onload = () => (window.pdfjsLib ? ok(window.pdfjsLib) : no(new Error("악보 화면 도구를 열지 못했어요")));
+    s.onerror = () => no(new Error("악보 화면 도구를 받지 못했어요 (Failed to fetch)"));
+    document.head.append(s);
+  }));
+  pdfjsP = pdfjsP || load().then((m) => { m.GlobalWorkerOptions.workerSrc = L.base + L.worker; return m; });
+  pdfjsP.catch(() => { pdfjsP = null; });          // 받지 못했으면 다음에 다시 받아 본다
   return pdfjsP;
 }
 
@@ -766,7 +788,7 @@ function headX(pts, beat) {
 
 // 재생 위치 표시 방식: 세로줄 / 마디만 옅게 강조 / 끄기 (기기에 기억)
 const CURSORS = [["line", "세로줄"], ["measure", "마디만 옅게 강조"], ["off", "끄기"]];
-let cursorMode = localStorage.getItem("cursor") || "line";
+let cursorMode = ls.get("cursor") || "line";
 if (!CURSORS.some(([v]) => v === cursorMode)) cursorMode = "line";
 function applyCursor() { $("score").dataset.cursor = cursorMode; }
 
@@ -827,7 +849,7 @@ function scrollToMeasure(k, smooth = true) {
 
 // 악보 크게 보기: 100% → 150% → 200% (폰에서는 악보가 작아서)
 const ZOOMS = [1, 1.5, 2];
-let zoom = +(localStorage.getItem("zoom") || 1);
+let zoom = +(ls.get("zoom") || 1);
 function applyZoom(rerender) {
   $("score").style.setProperty("--zoom", zoom);
   $("zoomBtn").textContent = Math.round(zoom * 100) + "%";
@@ -838,7 +860,7 @@ function applyZoom(rerender) {
   drawNames();                                            // 이름표가 서로 겹치는지는 화면 크기에 따라 달라진다
   scrollToMeasure(cur.player.kAt(cur.player.now()), false);
 }
-$("zoomBtn").onclick = () => { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; localStorage.setItem("zoom", zoom); applyZoom(true); };
+$("zoomBtn").onclick = () => { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; ls.set("zoom", zoom); applyZoom(true); };
 
 // ---- 매 화면마다: 지금 위치 표시
 function loop() {
@@ -1136,7 +1158,7 @@ function buildMixer() {
   sel.setAttribute("aria-label", "재생 위치 표시 방식");
   for (const [v, l] of CURSORS) { const o = document.createElement("option"); o.value = v; o.textContent = l; sel.append(o); }
   sel.value = cursorMode;
-  sel.onchange = () => { cursorMode = sel.value; localStorage.setItem("cursor", cursorMode); applyCursor(); showPos(); };
+  sel.onchange = () => { cursorMode = sel.value; ls.set("cursor", cursorMode); applyCursor(); showPos(); };
   const btns = document.createElement("div");
   btns.className = "btns";
   btns.append(sel);
@@ -1331,7 +1353,7 @@ function edit(fn) {
   commit(ed.part, ed.mi, out, sel);
 }
 
-let autoShift = localStorage.getItem("autoShift") !== "0";
+let autoShift = ls.get("autoShift") !== "0";
 
 function flagged() { const out = []; cur.check.measures.forEach((s, mi) => { if (s.state === "unsure") out.push(mi); }); return out; }
 
@@ -1399,7 +1421,7 @@ function renderPanel() {
   if (notes.length && Math.abs(end - m.len) > 0.002) root.append(el("div", "warn", `이 줄의 음이 ${Math.round(end * 100) / 100}박에서 끝나요 (마디 길이 ${m.len}박).`));
   const chk = el("label", "chk"), cb = el("input");
   cb.type = "checkbox"; cb.checked = autoShift;
-  cb.onchange = () => { autoShift = cb.checked; localStorage.setItem("autoShift", autoShift ? "1" : "0"); };
+  cb.onchange = () => { autoShift = cb.checked; ls.set("autoShift", autoShift ? "1" : "0"); };
   chk.append(cb, "길이를 바꾸면 뒤 음도 같이 움직이기");
   const key = E.keyOf(ed.part, m.n), hasOv = !!c.rec.edits.ov[key], checked = !!c.rec.edits.checked[m.n];
   const tools = line(chk);
@@ -1435,4 +1457,5 @@ $("listenBtn").onclick = async () => {                  // 고친 직후 그 마
 document.addEventListener("visibilitychange", () => { if (document.hidden && cur) save(true); });
 showLibrary();
 
+if ($("bootFail")) $("bootFail").hidden = true;      // 늦게라도 시작됐으면 "시작하지 못했어요" 안내를 걷는다
 window.__appReady = true;          // 자동 시험용: 이 파일이 끝까지 실행됐다는 표시 (문법 오류가 있으면 생기지 않는다)

@@ -21,6 +21,8 @@
       <input type="file" id="file" accept="application/pdf,.pdf,.musicxml,.mxl,.xml,.akbo,.json,application/json,image/*" hidden>
     </label>
   </header>
+  <p id="inappNote" class="status" hidden>카카오톡 안에서 열었어요. 여기서는 악보가 카카오톡 안에만 저장되고 홈 화면에 추가할 수 없어요.
+    <button class="btn sm">Safari·크롬으로 열기</button></p>
   <p id="libStatus" class="status" hidden></p>
   <p class="libtools"><button id="cancelBtn" class="btn sm" hidden>읽기 취소</button></p>
   <p id="slowAsk" class="libtools" hidden><span id="slowText"></span> <button id="waitMoreBtn" class="btn sm">더 기다리기</button> <button id="stopReadBtn" class="btn sm">취소</button></p>
@@ -91,6 +93,44 @@
   </div>
 </section>
 
+<div id="bootFail" class="bootfail" hidden></div>
+<script>
+// 앱이 시작하다 멈췄을 때(오래된 브라우저, 받지 못한 파일 등) 빈 화면 대신 까닭과 기기 정보를 보여 준다 — 이 화면을 찍어 보내면 원인을 찾을 수 있다.
+// 이 부분은 오래된 브라우저에서도 돌도록 옛 문법만 쓴다.
+(function () {
+  var errs = [];
+  function ios() { var m = /(?:iPhone|iPad|iPod).*? OS (\d+)_(\d+)/.exec(navigator.userAgent); return m ? m[1] + "." + m[2] : ""; }
+  function show() {
+    if (window.__appReady) return;
+    var el = document.getElementById("bootFail");
+    if (!el || !el.hidden) return;
+    var v = ios(), old = v && parseFloat(v) < 15;
+    el.hidden = false;
+    var h = document.createElement("p"); h.innerHTML = "<b>앱을 시작하지 못했어요.</b>";
+    var p = document.createElement("p");
+    p.textContent = old ? "이 기기의 iOS(" + v + ")가 너무 오래되었어요. 설정 → 일반 → 소프트웨어 업데이트로 올린 뒤 다시 열어 주세요."
+      : "인터넷이 되는지 확인하고 아래 단추를 눌러 주세요. 그래도 안 되면 이 화면을 찍어서 보내 주세요.";
+    var b = document.createElement("button"); b.className = "btn primary"; b.textContent = "다시 불러오기";
+    b.onclick = function () { location.reload(); };
+    var d = document.createElement("p"); d.className = "small";
+    d.textContent = "기기 정보: " + navigator.userAgent + (errs.length ? " / 오류: " + errs.slice(0, 3).join(" | ") : " / 오류 없음(시간 초과)");
+    el.appendChild(h); el.appendChild(p); el.appendChild(b); el.appendChild(d);
+  }
+  window.addEventListener("error", function (e) { if (e && e.message) { errs.push(e.message); setTimeout(show, 1500); } });
+  window.addEventListener("unhandledrejection", function (e) { errs.push(String(e && e.reason && (e.reason.message || e.reason))); });
+  setTimeout(show, 20000);
+  // 카카오톡 안에서 링크를 연 경우: 보관함이 카카오톡 안에 따로 생기고, 홈 화면에 추가할 수 없다 → Safari·크롬으로 열기를 권한다
+  if (/KAKAOTALK/i.test(navigator.userAgent)) {
+    document.addEventListener("DOMContentLoaded", function () {
+      var n = document.getElementById("inappNote");
+      if (!n) return;
+      n.hidden = false;
+      n.querySelector("button").onclick = function () { location.href = "kakaotalk://web/openExternal?url=" + encodeURIComponent(location.href); };
+    });
+  }
+})();
+</script>
+<script nomodule>document.getElementById("bootFail").hidden = false; document.getElementById("bootFail").textContent = "이 브라우저는 너무 오래되어 앱을 열 수 없어요. 기기의 소프트웨어(iOS·안드로이드)를 업데이트하거나 다른 브라우저로 열어 주세요.";</script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

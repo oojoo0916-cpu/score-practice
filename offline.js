@@ -8,7 +8,15 @@ import { SAMPLE_BASE, SAMPLE_FILES } from "./audio.js";
 const ENGINE = ["pyodide.js", "pyodide.asm.js", "pyodide.asm.wasm", "python_stdlib.zip", "pyodide-lock.json",
   "micropip-", "packaging-", "pdfminer_six-", "charset_normalizer-", "cryptography-", "cffi-", "pycparser-",
   ...["__init__", "prims", "glyphs", "layout", "notes", "marks", "reader", "export"].map((f) => "engine/pdfscore/" + f + ".py")];
-const PDFJS = ["pdf.min.mjs", "pdf.worker.min.mjs"];
+// 악보 화면 도구(pdf.js). 4판은 iOS 16.4(2023년 3월)보다 오래된 아이폰·아이패드의 Safari가 모르는 문법(class 안의 "static { … }")을 써서
+// 그런 기기에서는 불러오다 멈춘다(악보가 열리지 않는다) → 그 문법을 모르는 브라우저에서는 그 문법을 쓰지 않는 3판을 쓴다.
+// 시험용 손잡이: 주소에 ?pdfjs3 을 붙이면 새 브라우저에서도 3판을 쓴다.
+export const MODERN_SYNTAX = (() => { try { new Function("class A { static { } }"); return true; } catch (err) { return false; } })();
+const OLD_PDFJS = !MODERN_SYNTAX || (() => { try { return new URLSearchParams(location.search).has("pdfjs3"); } catch (err) { return false; } })();
+export const PDFJS_LIB = OLD_PDFJS
+  ? { base: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/", main: "pdf.min.js", worker: "pdf.worker.min.js", module: false }
+  : { base: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/legacy/build/", main: "pdf.min.mjs", worker: "pdf.worker.min.mjs", module: true };
+const PDFJS = [PDFJS_LIB.main, PDFJS_LIB.worker];
 
 export const needed = () => ({ engine: ENGINE.slice(), pdfjs: PDFJS.slice(), piano: SAMPLE_FILES.slice() });
 
@@ -34,7 +42,7 @@ export async function status() {
 }
 
 // 빠진 것을 받아 둔다. warmEngine(): 분석 엔진을 한 번 켜 보는 함수(켜지는 동안 받는 파일이 저장된다). pdfjsBase: pdf.js 주소
-export async function prepare({ pdfjsBase, warmEngine, onProgress = () => {} }) {
+export async function prepare({ pdfjsBase = PDFJS_LIB.base, warmEngine, onProgress = () => {} }) {
   const st = await status();
   if (!st.supported) throw new Error("이 주소에서는 인터넷 없이 쓰기를 준비할 수 없어요");
   const jobs = [...st.pdfjs.missing.map((f) => pdfjsBase + f), ...st.piano.missing.map((f) => SAMPLE_BASE + f)];
