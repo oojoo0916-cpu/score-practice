@@ -509,7 +509,9 @@ def _match_words(words, notes, sp):
 
 
 def assign_lyrics(chars, sysm, events, rects):
-    """노래 오선 아래 글자를 가로 위치가 맞는 음표에 붙인다."""
+    """노래 오선 아래 글자를 가로 위치가 맞는 음표에 붙인다.
+    돌려주는 것: 가사 줄에 있는데 가까이에 붙을 음표가 없는 한글 음절 [(오선, 가운데 x, 글자)] — 그 자리의 음표를 놓쳤을 수 있다."""
+    orphans = []
     for i, st in enumerate(sysm.staves):
         if st.role != "vocal":
             continue
@@ -535,6 +537,22 @@ def assign_lyrics(chars, sysm, events, rects):
             rows.setdefault(round(c.oy), []).append(c)
         for y in sorted(rows):
             row = sorted(rows[y], key=lambda c: c.x0)
+            # 괄호 속 대사: "(오직!)", "(세상에 전해주시오)" 처럼 쉼표 위에 적힌 말. 음절 중에 밑에 음표가 없는 것이 있으면 괄호 전체를 가사로 쓰지 않는다
+            # (음표마다 밑에 있는 "(우)" 같은 허밍 가사는 그대로 쓴다)
+            spoken, grp = set(), None
+            for c in row:
+                if c.t == "(":
+                    grp = [c]
+                elif grp is not None:
+                    grp.append(c)
+                    if ")" in c.t:
+                        han = [g for g in grp if is_hangul(g.t)]
+                        if len(han) >= 2 and any(min(abs(e.cx - g.cx) for e in notes) > 1.7 * sp for g in han):
+                            for g in grp:
+                                g.used = "spoken"
+                                spoken.add(id(g))
+                        grp = None
+            row = [c for c in row if id(c) not in spoken]
             # 한글은 한 글자씩, 로마자는 붙은 글자끼리 한 덩어리
             toks = []
             for c in row:
@@ -570,18 +588,32 @@ def assign_lyrics(chars, sysm, events, rects):
                     for c in words[wi][3]:
                         c.used = "lyric"
                 toks = [w[3] for wi, w in enumerate(words) if wi not in done]      # 짝을 못 찾은 단어는 아래의 예전 규칙으로
+            last = None                           # 바로 앞에서 음표에 붙인 (음표, 글자들)
             for tk in toks:
                 text = "".join(c.t for c in tk)
                 cx = (tk[0].x0 + tk[-1].x1) / 2
                 e = min(notes, key=lambda e: abs(e.cx - cx))
                 if abs(e.cx - cx) > 1.7 * sp:
+                    if last and is_hangul(tk[0].t) and tk[0].x0 - last[1][-1].x1 < 0.35 * tk[0].size:
+                        # 한 음에 여러 음절을 붙여 적은 낱말("아이스", "스트로"): 앞 음절에 바로 붙어 있으면 같은 음의 가사다
+                        last[0].lyric += text
+                        for c in tk:
+                            c.used = "lyric"
+                        last = (last[0], tk)
+                        continue
+                    if any(is_hangul(c.t) for c in tk):
+                        orphans.append((st, cx, text))
+                    last = None
                     continue
                 if getattr(e, "lyric_row", y) != y:
+                    last = None
                     continue                      # 2절 이하는 지금은 쓰지 않는다
                 e.lyric_row = y
                 e.lyric += text
                 for c in tk:
                     c.used = "lyric"
+                last = (e, tk)
+    return orphans
 
 
 # ------------------------------------------------------------------ 페르마타

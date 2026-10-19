@@ -288,19 +288,23 @@ def find_barlines(pr, sysm, heads, dot_chars):
             bars.append(g)
         g.thick = g.thick or lw > base * 2.5
         g.staves |= covered
-    # 도돌이표 점: 오선 둘째·셋째 칸에 세로로 나란한 점 두 개가 마디선 바로 옆에 있다
+    # 도돌이표 점: 오선 둘째·셋째 칸에 세로로 나란한(가로 자리가 같은) 점 두 개가 마디선 바로 옆에 있다.
+    # 가로 자리가 어긋난 두 점은 마디선 바로 앞 화음의 점이다 (내 갈 길 41마디: 2도 화음의 점이 셋째·둘째 칸에 엇갈려 찍힘)
     for g in bars:
         for side in (-1, 1):
             near = []
-            for d in dot_chars:
-                dx = (g.x0 - d.ox) if side < 0 else (d.ox - g.x1)
-                if not (0 < dx < 1.8 * sp):
-                    continue
-                for s in sysm.staves:
+            for s in sysm.staves:
+                lo, hi = [], []
+                for d in dot_chars:
+                    dx = (g.x0 - d.ox) if side < 0 else (d.ox - g.x1)
+                    if not (0 < dx < 1.8 * sp):
+                        continue
                     p = s.pos(d.oy)
-                    if abs(p - 3) < 0.35 or abs(p - 5) < 0.35:
-                        near.append(d)
-                        break
+                    (lo if abs(p - 3) < 0.35 else hi if abs(p - 5) < 0.35 else []).append(d)
+                for a in lo:
+                    b = next((b for b in hi if abs(b.ox - a.ox) < 0.3 * sp), None)
+                    if b is not None:
+                        near += [a, b]
             if len(near) >= 2:
                 for d in near:
                     d.used = "repeat"

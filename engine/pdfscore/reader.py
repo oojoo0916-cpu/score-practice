@@ -49,6 +49,7 @@ class Measure:
     staves: list = field(default_factory=list)
     align: list = field(default_factory=list)       # 세로 정렬 검사에서 어긋난 곳
     checks: list = field(default_factory=list)      # 기호 사용 검사에서 걸린 것 [(역할, 설명)]
+    doubts: list = field(default_factory=list)      # 그 밖의 자동 검사 [(종류, 설명)] — "lyric": 가사 음절 밑에 붙을 음표가 없다(음표를 놓쳤을 수 있다)
     printed: object = None                          # 악보에 인쇄된 마디 번호
     first_in_system: bool = False
     last_in_system: bool = False
@@ -62,7 +63,7 @@ class Measure:
 
     @property
     def ok(self):
-        return all(s.ok for s in self.vocal) and not self.align and not any(r == "vocal" for r, _ in self.checks)
+        return all(s.ok for s in self.vocal) and not self.align and not any(r == "vocal" for r, _ in self.checks) and not self.doubts
 
 
 @dataclass
@@ -295,7 +296,7 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
         keyfn[s.idx], _ = notes.staff_context(sysm, s, zch, heads, events, stt)
 
     marks.apply_tuplets(zch, sysm, events, beams)
-    marks.assign_lyrics(zch, sysm, events, pr.rects)
+    orphans = marks.assign_lyrics(zch, sysm, events, pr.rects)
     marks.assign_fermatas(zch, sysm, events)
     tempos = marks.find_tempos(zch)
     # 진행 기호 글자(D.S. al Coda, D.C. al Fine …)는 코드를 찾기 전에 먼저 가려 둔다: 안 그러면 그 속의 'D'·'C' 가 코드 이름으로 읽힌다.
@@ -498,6 +499,10 @@ def _read_system(pr, sysm, zone, st, score, zch, page_heads, beams):
             n_ev = sum(1 for e in events if e.kind == "note" and e.region == ri and e.flags and e.staff.role == role)
             if n_glyph != n_ev:
                 m.checks.append((role, f"꼬리 글자 {n_glyph}개인데 꼬리 달린 음 {n_ev}개"))
+    for _st, x, text in orphans:                      # 9) 가사 음절 밑에 붙을 음표가 없다 → 그 자리의 음표를 놓쳤을 수 있다
+        ri = next((i for i, r in enumerate(regions) if r[0] < x <= r[1]), None)
+        if ri in by_region:
+            by_region[ri].doubts.append(("lyric", f"붙을 음표가 없는 가사 '{text}'"))
     for e in events:
         if e.warn:
             score.warnings.append(f"p{pr.page} 시스템{sysm.idx + 1} x{e.x:.0f}: {e.warn}")

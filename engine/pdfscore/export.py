@@ -64,6 +64,8 @@ def summary(score, piano=False):
             flags.append("세로정렬어긋남(" + "; ".join(m.align[:3]) + ")")
         if m.checks:
             flags.append("기호검사(" + "; ".join(f"{'노래' if r == 'vocal' else '피아노'}:{t}" for r, t in m.checks[:3]) + ")")
+        if m.doubts:
+            flags.append("검사(" + "; ".join(t for _, t in m.doubts[:3]) + ")")
         head = f"마디{m.n} p{m.page} {m.meter[0]}/{m.meter[1]} {'OK' if m.ok else '확인'} {' '.join(flags)}".rstrip()
         lines.append(f"{head} | 코드 {chords}" if chords else head)
         for sd in m.staves:
@@ -98,6 +100,7 @@ def stats(score):
         "align_bad": [m.n for m in ms if m.align],
         "symbol_bad": [m.n for m in ms if any(r == "vocal" for r, _ in m.checks)],
         "symbol_bad_piano": [m.n for m in ms if any(r == "piano" for r, _ in m.checks)],
+        "lyric_bad": [m.n for m in ms if any(k == "lyric" for k, _ in m.doubts)],      # 가사 밑에 음표가 없는 마디
         "need_check": bad,
         "printed_numbers": len(printed),
         "printed_mismatch": mism,
@@ -252,7 +255,8 @@ def rest_voices(staves):
 
 
 def why_of(m):
-    """자동 검사에 걸린 마디가 어느 검사에 걸렸는지: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" (노래 줄 기준)."""
+    """자동 검사에 걸린 마디가 어느 검사에 걸렸는지: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" (노래 줄 기준)
+    · 가사 밑에 붙을 음표가 없음 "lyric"."""
     out = []
     if not all(s.ok for s in m.vocal):
         out.append("sum")
@@ -260,6 +264,8 @@ def why_of(m):
         out.append("align")
     if any(r == "vocal" for r, _ in m.checks):
         out.append("symbol")
+    for k in dict.fromkeys(k for k, _ in m.doubts):
+        out.append(k)
     return out
 
 

@@ -59,6 +59,7 @@ const AUTO_NOTE = (rec) => (rec.source === "scan" ? "박자 합만 맞아요 —
   : rec.kind === "xml" ? "MusicXML 파일에 적힌 그대로 옮긴 마디예요."
     : "자동 검사(박자·기호)만 통과했어요 — 음이 맞는지 직접 본 것은 아니에요.");
 const WHY = { sum: "박자 합이 안 맞아요", align: "줄끼리 세로 위치가 어긋나요", symbol: "놓친 음표나 꼬리가 있을 수 있어요", check: "자동 검사에 걸렸어요",
+  lyric: "가사 밑에 음표가 없어요 (음표를 놓쳤을 수 있어요)",
   stale: "고친 뒤에 악보를 다시 읽었더니 달라졌어요", tie: "이음줄을 붙임줄로 본 곳이 있어요(추정)" };
 const UNSUP = { grace: "꾸밈음", grace_piano: "반주의 꾸밈음", unpitched: "음높이 없는 음표(타악기)", chord: "해석 못 한 코드" };
 function stateText(rec, st, unit = "") {
@@ -359,7 +360,7 @@ async function offlineNote(msg) {
 }
 
 // 엔진이 좋아지면 이 숫자를 올린다 → 보관함의 곡을 열 때 저장해 둔 PDF로 자동으로 다시 읽는다 (설정은 그대로)
-const ENGINE = 22;
+const ENGINE = 23;
 const XMLV = 10;                          // MusicXML 옮기는 규칙이 바뀌면 올린다
 const isXml = (rec) => rec.kind === "xml";
 const wantEngine = (rec) => (isXml(rec) ? "xml" + XMLV : ENGINE);

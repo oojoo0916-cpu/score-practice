@@ -255,7 +255,7 @@ export function parseChord(name) {
 // ---- 확인 상태 (P3-1). 마디마다 서로 다른 네 가지를 섞지 않고 따로 적는다:
 //   state "auto"   자동 검사를 통과했다 (사람이 확인했다는 뜻이 아니다)
 //         "user"   사용자가 "확인 완료"로 표시했다
-//         "unsure" 인식이 불확실하다 — why 에 까닭: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" · 까닭이 안 적힌 옛 자료 "check"
+//         "unsure" 인식이 불확실하다 — why 에 까닭: 박자 합 "sum" · 세로 정렬 "align" · 기호 검사 "symbol" · 가사 밑에 음표가 없음 "lyric" · 까닭이 안 적힌 옛 자료 "check"
 //                  · 고친 뒤 다시 읽었더니 달라짐 "stale" · 스캔에서 이음줄을 붙임줄로 본 곳 "tie"
 //   unsupported    악보에 있지만 소리 내지 않는 표기 (꾸밈음 "grace"·"grace_piano", 음높이 없는 음표 "unpitched", 해석 못 한 코드 "chord").
 //                  확인했다고 사라지지 않으므로 state 와 따로 둔다

@@ -291,6 +291,8 @@ def assign_dots(chars, sysm, heads, events):
             last = getattr(t, "dot_x", None)
             if last is not None and d.ox < last + 0.5 * sp:
                 continue                               # 이미 이 자리의 점을 가진 머리 (겹친 두 성부)
+            if last is not None and abs(d.oy - t.dot_y) > 0.3 * sp:
+                continue                               # 겹점은 같은 높이에 나란히 찍힌다. 높이가 다른 점은 화음의 다른 음 것 (내 갈 길 41·51마디: 2도 화음)
             limit = (1.7 if t.dots == 0 else 2.8) * sp
             if -0.35 <= dx <= limit:
                 key = (round(dx, 1), round(abs(d.oy - ty), 1), t.dots)
@@ -299,6 +301,7 @@ def assign_dots(chars, sysm, heads, events):
         if best:
             best[1].dots += 1
             best[1].dot_x = d.ox
+            best[1].dot_y = d.oy
             d.used = "dot"
     for e in events:
         if e.kind != "rest" and e.heads:
@@ -512,7 +515,52 @@ def time_events(evs, length):
                 if ok2:
                     return True, total2
                 e.dots = keep
+    if _two_voices(evs, length):
+        return True, length
     return _time_run(evs, length)
+
+
+def _two_voices(evs, length):
+    """③ 한 오선에 두 성부가 따로 움직인다(위 성부 = 기둥 위, 아래 성부 = 기둥 아래). 같이 시작하는 음이라도 머리가 옆으로 비켜 찍혀서
+    한 줄로 세면 합이 넘친다 (내 갈 길 48마디: 위 4분음표 넷, 아래 점2분음표·8분쉼표·8분음표 / 55마디: 위 온음표, 아래 2분·4분·4분).
+    기둥 없는 음(온음표)과 쉼표는 어느 성부인지 모르므로 오선 가운데보다 위면 위 성부부터 놓아 본다.
+    두 성부가 각각 마디 길이와 딱 맞고, 박 순서가 악보의 가로 순서와 어긋나지 않을 때만 받아들인다
+    (한 성부 악보는 음 높이에 따라 기둥 방향이 바뀌므로, 잘못 나누면 같은 박의 음이 멀리 떨어진 자리에 놓여 걸러진다)."""
+    from itertools import product
+    up = [e for e in evs if e.kind == "note" and e.stem and e.stem["up"]]
+    down = [e for e in evs if e.kind == "note" and e.stem and not e.stem["up"]]
+    free = [e for e in evs if not (e.kind == "note" and e.stem)]
+    stemless = [e for e in free if e.kind == "note"]
+    if len(free) > 6 or not (up or down) or not ((up and down) or stemless):
+        return False                                          # 두 성부 모두 기둥 있는 음이 있거나, 한쪽이 기둥 없는 음(온음표)일 때만
+    st = evs[0].staff
+    sp, mid = st.sp, (st.top + st.bottom) / 2
+    guess = [0 if e.y < mid else 1 for e in free]            # 0 = 위 성부
+    combos = sorted(product((0, 1), repeat=len(free)), key=lambda c: sum(a != b for a, b in zip(c, guess)))
+    for combo in combos:
+        a = sorted(up + [e for e, k in zip(free, combo) if k == 0], key=lambda e: e.x)
+        b = sorted(down + [e for e, k in zip(free, combo) if k == 1], key=lambda e: e.x)
+        if not any(e.kind == "note" for e in a) or not any(e.kind == "note" for e in b):
+            continue
+        if not _time_run(a, length)[0]:
+            continue
+        beats_a = [(e, e.beat) for e in a]
+        if not _time_run(b, length)[0]:
+            continue
+        for e, t in beats_a:                                  # 둘째 성부를 세는 동안 바뀌지 않았지만, 순서대로 다시 적어 둔다
+            e.beat = t
+        # 같은 박에 시작하는 두 성부의 음은 세로로 거의 같은 자리에 있다(같은 음이면 머리 하나만큼 비켜 찍힌다)
+        # (베토벤 '멀리 있는 연인에게' 6마디 왼손: 4분음표를 2분음표로 잘못 읽은 채 나누면 합은 맞지만 같은 박의 음이 멀리 떨어진다)
+        if any((e1.beat < e2.beat and e1.x > e2.x + 1.5 * sp) or (e2.beat < e1.beat and e2.x > e1.x + 1.5 * sp)
+               or (e1.beat == e2.beat and abs(e1.x - e2.x) > 2.6 * sp)       # 온음표는 머리가 넓어 더 비켜 찍힌다 (내 갈 길 55마디: 2칸)
+               for e1 in a for e2 in b):
+            continue
+        for e in a:
+            e.voice = 1
+        for e in b:
+            e.voice = 2
+        return True
+    return False
 
 
 def _time_run(evs, length):
