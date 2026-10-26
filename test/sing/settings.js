@@ -34,10 +34,11 @@ export const SING = {
   traceMarginMs: 150,      // 음표 앞뒤로 이만큼 더 기록해 둔다 (5단계 그래프의 여유)
   sameStartMs: 30,         // 시작이 이만큼 안에서 같은 음들은 한 화음 = 그중 하나를 부르면 된다 (갈라 부르는 곳을 '전체'로 고른 경우)
 
-  // ---- 채점 시험 화면 (debug.js)
-  debugMeasures: 4,        // 악보 처음 몇 마디로 시험할지
-  debugTailSec: 0.5,       // 구간이 끝난 뒤 조금 더 녹음 (늦게 끝나는 음)
-  debugPrimeSec: 0.7,      // 카운트인 전에 첫 음을 들려주는 길이
+  // ---- 불러보기 화면 (tryout.js)
+  tryLengths: [2, 4, 8],   // 한 번에 부를 마디 수로 고를 수 있는 것
+  tryMeasures: 4,          // 처음에 고른 마디 수
+  tryTailSec: 0.5,         // 구간이 끝난 뒤 조금 더 녹음 (늦게 끝나는 음)
+  tryPrimeSec: 0.7,        // 카운트인 전에 첫 음을 들려주는 길이
 
   // ---- 튜너 화면 (tuner.js)
   tunerGoodCents: 10,      // ±이 안이면 초록

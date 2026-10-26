@@ -1468,9 +1468,9 @@ $("singBtn").onclick = async () => {
   if (!cur) return;
   cur.player.pause();
   refreshPlay();
-  try { (await import("./sing/debug.js")).openDebug({ sound, player: cur.player }); } catch (err) {
+  try { (await import("./sing/tryout.js")).openTryout({ sound, player: cur.player }); } catch (err) {
     console.error(err);
-    pStatus("채점 시험 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);
+    pStatus("불러보기 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);
   }
 };
 

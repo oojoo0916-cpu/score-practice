@@ -23,7 +23,7 @@
 .sing-msg.err { color: var(--warn, #b3261e); font-weight: 600; }
 .sing-start { min-height: 52px; font-size: 1.05rem; }
 .sing-foot { margin: 0; text-align: center; }
-/* 채점 시험 화면 (debug.js) */
+/* 판정 표·고르기 (tryout.js) */
 .sing-opts { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .sing-sel { display: inline-flex; align-items: center; gap: 6px; }
 .sing-sel select { min-height: 44px; min-width: 44px; border-radius: 10px; border: 1px solid var(--line, #dfe3ec); background: var(--card, #fffdf8); padding: 0 8px; font: inherit; color: inherit; }
@@ -39,3 +39,9 @@
 .sing-table tr.v-ok td { color: var(--on, #1f6f5c); }
 .sing-table tr.v-wrong td { color: var(--warn, #b3261e); font-weight: 600; }
 .sing-table tr.v-missed td { color: var(--muted, #667089); }
+/* 불러보기 화면 (tryout.js) */
+.sing-screen [hidden] { display: none !important; }
+.sing-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sing-rangetext { flex: 1; min-width: 6em; text-align: center; font-size: 1.1rem; }
+.sing-more summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--muted, #667089); }
+.sing-more .sing-opts { padding: 4px 0 8px; }
