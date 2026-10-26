@@ -1471,8 +1471,8 @@ $("singBtn").onclick = async () => {
   if ($("practice").classList.contains("sing-on")) return;
   if (cur.ed.on) setEditing(false);
   try {
-    (await import("./sing/sing-mode.js")).openSing({ sound, player: cur.player, pages: cur.pages, boxes: cur.boxes, score: $("score"), practice: $("practice"),
-      dock: document.querySelector("#practice .dock"), back: $("back"), scrollTo: (k) => { if (cur) scrollToMeasure(k); }, refresh: refreshAll, save });
+    (await import("./sing/panel.js")).openPanel({ sound, player: cur.player, pages: cur.pages, boxes: cur.boxes, score: $("score"), practice: $("practice"),
+      dock: document.querySelector("#practice .dock"), back: $("back"), scrollTo: (k) => requestAnimationFrame(() => { if (cur) scrollToMeasure(k, false); }), refresh: refreshAll, save });      // 조작판 글이 바뀌며 높이가 변하면 부드러운 스크롤이 끊겨서, 한 장면 뒤에 바로 옮긴다
   } catch (err) {
     console.error(err);
     pStatus("부르기 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);

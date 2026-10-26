@@ -61,8 +61,50 @@
 /* 악보 위: 부를 구간, 판정 점, 틀린 음의 부른 음이름 */
 .score .mbox.sing-in, .score[data-cursor] .mbox.sing-in.cur { background: rgba(60, 120, 230, .10); box-shadow: inset 0 0 0 2px rgba(60, 120, 230, .55); }
 .sing-mark { position: absolute; width: 2.3%; aspect-ratio: 1; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 2; }
-.sing-mark.v-ok { background: rgba(30, 150, 90, .55); box-shadow: 0 0 0 2px rgba(30, 150, 90, .85); }
-.sing-mark.v-wrong { background: rgba(215, 40, 30, .5); box-shadow: 0 0 0 2px rgba(215, 40, 30, .9); }
-.sing-mark.v-missed { background: rgba(120, 120, 120, .25); box-shadow: 0 0 0 2px rgba(110, 110, 110, .8); }
-.sing-label { position: absolute; transform: translate(-50%, -190%); font-size: 11px; font-weight: 800; line-height: 1.2; color: #fff; background: rgba(200, 35, 25, .92);
+.sing-mark.v-ok { background: rgba(var(--sing-ok, 30, 150, 90), .5); box-shadow: 0 0 0 2px rgba(var(--sing-ok, 30, 150, 90), .9); }
+.sing-mark.v-wrong { background: rgba(var(--sing-wrong, 215, 40, 30), .5); box-shadow: 0 0 0 2px rgba(var(--sing-wrong, 215, 40, 30), .9); }
+.sing-mark.v-missed { background: rgba(var(--sing-missed, 110, 110, 110), .22); box-shadow: 0 0 0 2px rgba(var(--sing-missed, 110, 110, 110), .8); }
+.sing-mark.v-timing { background: rgba(var(--sing-timing, 230, 170, 0), .5); box-shadow: 0 0 0 2px rgba(var(--sing-timing, 230, 170, 0), .95); }
+/* 누를 수 있는 점(5단계 그래프): 눈에 보이는 점은 작아도 누르는 자리는 넉넉하게 */
+.sing-mark.tap { pointer-events: auto; cursor: pointer; }
+.sing-mark.tap::before { content: ""; position: absolute; inset: -12px; border-radius: 50%; }
+/* 색맹 모드: 색 말고 모양으로도 — 정확 ○ · 틀림 × · 박자 △ · 인식 안 됨 ? */
+.sing-cb .sing-mark::after { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -1px); font-size: 12px; font-weight: 900; line-height: 1; text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
+.sing-cb .sing-mark.v-ok::after { content: "○"; color: rgb(var(--sing-ok)); }
+.sing-cb .sing-mark.v-wrong::after { content: "×"; color: rgb(var(--sing-wrong)); }
+.sing-cb .sing-mark.v-timing::after { content: "△"; color: rgb(var(--sing-timing)); }
+.sing-cb .sing-mark.v-missed::after { content: "?"; color: rgb(var(--sing-missed)); }
+/* 틀린 음을 부른 높이에 덧그린 머리, 덧줄, 임시표 / 박자만 틀린 음을 옆으로 옮겨 그린 머리 */
+.sing-ghost { position: absolute; transform: translate(-50%, -50%) rotate(-20deg); border-radius: 50%; background: rgba(var(--sing-wrong, 215, 40, 30), .5);
+  box-shadow: 0 0 0 1px rgba(var(--sing-wrong, 215, 40, 30), .9); pointer-events: none; z-index: 2; }
+.sing-ghost.timing { background: rgba(var(--sing-timing, 230, 170, 0), .5); box-shadow: 0 0 0 1px rgba(var(--sing-timing, 230, 170, 0), .95); }
+.sing-ledger { position: absolute; height: 1.5px; transform: translate(-50%, -50%); background: rgba(var(--sing-wrong, 215, 40, 30), .85); pointer-events: none; z-index: 2; }
+.sing-acc { position: absolute; transform: translate(-50%, -55%); font-size: 13px; font-weight: 800; line-height: 1; color: rgb(var(--sing-wrong, 215, 40, 30)); pointer-events: none; z-index: 2; }
+.sing-label { position: absolute; transform: translate(-50%, -190%); font-size: 11px; font-weight: 800; line-height: 1.2; color: #fff; background: rgba(var(--sing-wrong, 215, 40, 30), .92);
   border-radius: 6px; padding: 0 4px; white-space: nowrap; pointer-events: none; z-index: 3; }
+.sing-label.small { font-size: 10px; transform: translate(-50%, -170%); opacity: .95; }
+/* 채점 표시 끄기 */
+.sing-hide .sing-mark, .sing-hide .sing-ghost, .sing-hide .sing-ledger, .sing-hide .sing-acc, .sing-hide .sing-label { display: none; }
+/* 메아리 | 반주와 부르기 고르기, 결과 단추들 (panel.js) */
+.sing-tabs { display: flex; align-items: center; gap: 6px; }
+.sing-grow { flex: 1; }
+.sing-optgroup { display: inline-flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.sing-result { flex-wrap: wrap; }
+.sing-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 음표 그래프 팝업 (note-popup.js) */
+.sing-pop { position: fixed; z-index: 60; background: var(--card, #fffdf8); color: var(--ink, #1b2233); border: 1px solid var(--line, #dfe3ec); border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.25); padding: 8px 10px 10px; display: grid; gap: 6px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.sing-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sing-pop-graph { width: 100%; height: 150px; display: block; border-radius: 8px; background: #fff; border: 1px solid var(--line, #dfe3ec); }
+.sing-pop-facts { display: grid; gap: 2px; font-size: .92rem; }
+.sing-pop-row { display: flex; justify-content: space-between; gap: 10px; }
+.sing-pop-row span { color: var(--muted, #667089); white-space: nowrap; }
+.sing-pop-row b { text-align: right; }
+.sing-pop-row.warn b { color: var(--accent, #d9822b); }
+.sing-table tr.v-timing td { color: #9a6b00; font-weight: 600; }
+/* 박자 보정 (calibrate.js) */
+.sing-dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; padding: 12px 0; }
+.sing-dot { width: 22px; height: 22px; border-radius: 50%; background: var(--line, #dfe3ec); transition: background .05s; }
+.sing-dot.lead { background: #eceff5; box-shadow: inset 0 0 0 2px var(--line, #dfe3ec); }
+.sing-dot.on { background: var(--on, #1f6f5c); }
+.sing-dot.lead.on { background: var(--muted, #667089); }

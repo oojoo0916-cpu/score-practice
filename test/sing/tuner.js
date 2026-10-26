@@ -39,7 +39,8 @@ export async function openTuner({ sound }) {
   const msg = h("p", "sing-msg", "아래 '마이크 켜기'를 누르고 한 음을 길게 불러 보세요. 처음에는 마이크를 써도 되는지 묻는 창이 떠요 — '허용'을 눌러 주세요.");
   const btn = h("button", "btn primary sing-start", "마이크 켜기");
   const foot = h("p", "sing-foot small", `기준 음 A4 = ${S.a4}Hz · 이어폰을 끼면 더 정확해요`);
-  root.append(head, note, hz, meter, cents, canvas, msg, btn, foot);
+  const calBtn = h("button", "btn sm sing-calbtn", "⏱ 박자 보정");     // 6단계: 기기 지연 재기
+  root.append(head, note, hz, meter, cents, canvas, msg, btn, calBtn, foot);
   document.body.append(root);
 
   const eng = new PitchEngine({ getCtx: () => sound.ensure(), settings: S });
@@ -141,6 +142,10 @@ export async function openTuner({ sound }) {
   function onHide() { if (document.hidden && eng.running) { eng.stop(); cancelAnimationFrame(raf); btn.textContent = "마이크 켜기"; setMsg("화면을 벗어나서 마이크를 껐어요. 다시 켜 주세요."); } }
   document.addEventListener("visibilitychange", onHide);
   btn.onclick = toggle;
+  calBtn.onclick = async () => {                                   // 마이크를 내려놓고 보정 화면으로 (두 화면이 마이크를 같이 쓰지 않게)
+    if (eng.running) { eng.stop(); cancelAnimationFrame(raf); btn.textContent = "마이크 켜기"; }
+    (await import("./calibrate.js")).openCalibrate({ sound });
+  };
   close.onclick = shut;
   return { close: shut, engine: eng, root };
 }

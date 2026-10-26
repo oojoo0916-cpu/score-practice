@@ -21,9 +21,9 @@ export const SING = {
 
   // ---- 채점 (scoring.js)
   levels: {                // 판정 난이도: 부른 중심 음이 목표 음에서 ±몇 센트 안이면 "정확"
-    easy: { name: "쉬움", cents: 50 },
-    normal: { name: "보통", cents: 30 },
-    strict: { name: "엄격", cents: 15 },
+    easy: { name: "쉬움", cents: 50, timingMs: 200 },      // timingMs: 음 시작이 악보보다 ±몇 ms 안이면 박자 맞음 (6단계)
+    normal: { name: "보통", cents: 30, timingMs: 120 },
+    strict: { name: "엄격", cents: 15, timingMs: 70 },
   },
   level: "easy",           // 처음 난이도. 보통(±30)으로 시작했다가 "너무 엄격하다"는 사용자 의견으로 쉬움(±50 = 옆 반음보다 목표 음에 가까우면 정확)으로 바꿈 (2026-10-27)
   octaveFree: true,        // 옥타브 무시: 한 옥타브(또는 몇 옥타브) 다르게 불러도 같은 음이면 "정확" (남자가 여자 줄을 부를 때 등)
@@ -38,6 +38,57 @@ export const SING = {
   lagMinFrames: 10,        // 맞는 순간이 이보다 적으면 늦음을 찾지 않는다(0으로 둔다)
   traceMarginMs: 150,      // 음표 앞뒤로 이만큼 더 기록해 둔다 (5단계 그래프의 여유)
   sameStartMs: 30,         // 시작이 이만큼 안에서 같은 음들은 한 화음 = 그중 하나를 부르면 된다 (갈라 부르는 곳을 '전체'로 고른 경우)
+
+  // ---- 박자 판정 (scoring.js 의 findOnset·timing) · 박자 보정 (calibrate.js)
+  latencyMs: null,         // 기기 지연(소리가 나가서 내 소리가 마이크로 들어올 때까지). 박자 보정으로 기기마다 재서 기억한다. 없으면 아래 어림값
+  defaultLatencyMs: 150,   // 보정하지 않았을 때 어림하는 지연 (이때 박자 판정은 "어림"이라고 알린다)
+  btWarnMs: 250,           // 보정한 지연이 이보다 크면 "블루투스 이어폰이면 늦게 들려요" 안내
+  onsetSearchMs: 450,      // 악보의 음 시작에서 앞뒤로 이만큼 안에서 내 음 시작을 찾는다 (앞뒤 음과의 가운데를 넘지는 않는다. 0.3 이었다가 느린 곡에서 반 박 늦은 것을 못 찾아 늘림)
+  onsetRiseDb: 6,          // 소리가 바로 앞 0.1초의 가장 작은 크기보다 이만큼(dB) 커지면 "음 시작" (자음으로 시작해도 여기서 잡힌다)
+  onsetNearSemis: 0.6,     // 음높이로 찾을 때: 목표 음에서 이만큼(반음) 안으로 들어온 첫 순간
+  timingSkipFermata: true, // 페르마타 음은 박자 판정을 하지 않는다
+  shortShare: 0.6,         // 부른 길이가 악보 길이의 이 비율보다 짧으면 "짧게 끊음" (기록만, 색 판정에는 안 씀)
+  calibClicks: 8,          // 박자 보정: 이만큼의 박자 소리에 맞춰 "따"
+  calibLeadClicks: 2,      //            앞에 듣기만 하는 박자 소리
+  calibIntervalSec: 0.75,  //            박자 소리 간격 (♩=80)
+  calibMinVoiceMs: 80,     //            이보다 짧은 소리는 "따"가 아니라 박자 소리가 새어 들어온 것으로 본다
+  calibMinMatches: 5,      //            이만큼은 맞춰야 보정값을 저장한다
+  calibMaxSpreadMs: 80,    //            맞춘 시각들이 이보다 들쭉날쭉하면 다시 하자고 한다
+
+  // ---- 음표 그래프 팝업 (note-popup.js, scoring.describeNote)
+  driftCents: 20,          // 음 끝 1/3 의 평균이 앞부분보다 이만큼 낮으면 "끝에서 떨어짐", 높으면 "끝에서 올라감"
+  driftMinMs: 300,         // 이보다 짧은 음은 끝 처짐을 보지 않는다
+  scoopCents: 50,          // 음 시작이 이만큼 아래에서 올라오면 "아래에서 긁어 올림"
+  scoopWindowMs: 150,      // 음 시작 직후 몇 ms 를 볼지
+  graphCentsMin: 150,      // 그래프 위아래 범위(센트): 적어도 ±이만큼
+  graphCentsMax: 600,      //                         많아도 ±이만큼 (그 밖은 가장자리에 붙여 그린다)
+
+  // ---- 악보 위 표시 (overlay.js). 색은 "빨강, 초록, 파랑" 숫자 (반투명은 화면 쪽에서 정한다)
+  colors: {
+    normal: { ok: "30, 150, 90", wrong: "215, 40, 30", missed: "110, 110, 110", timing: "230, 170, 0" },       // 초록 정확 · 빨강 틀림 · 회색 인식 안 됨 · 노랑 박자만 틀림(6단계)
+    colorblind: { ok: "31, 111, 209", wrong: "214, 51, 138", missed: "110, 110, 110", timing: "20, 160, 140" }, // 색맹 모드: 파랑 · 분홍 · 회색 · 청록 (+ ○ × △ 기호)
+  },
+  colorblind: false,       // 색맹 모드 (처음 값, 화면에서 바꾸면 기억)
+  hideMarks: false,        // 채점 표시 끄기 (처음 값)
+  ghostOffsetSpaces: 1.8,  // 틀린 음의 "부른 높이" 머리를 원래 머리에서 오른쪽으로 오선 몇 칸 옆에 그릴지
+  ghostMaxSteps: 8,        // 부른 높이가 이보다 많이(오선 자리 기준) 벗어나면 덧그리지 않고 ↑/↓ 와 음이름만
+  timingShiftSpaces: 1.0,  // 박자만 틀린 음(6단계): 빠르면 왼쪽, 늦으면 오른쪽으로 오선 몇 칸 옮겨 그릴지
+
+  // ---- 구간 나누기 (ranges.js)
+  phraseGapBeats: 1,       // 프레이즈: 4분음표 한 박 이상 쉬면 끊는다
+  phraseMaxMeasures: 4,    // 한 프레이즈가 이보다 길면 그 안에서 가장 길게 쉬는 곳에서 한 번 더 끊는다
+
+  // ---- 메아리 모드 (echo-mode.js): 듣기 → 첫 음 → 카운트인 → 반주 없이 따라 부르기
+  echoUnits: ["phrase", 1, 2, 4],   // 고를 수 있는 구간 단위 (프레이즈 · 1마디 · 2마디 · 4마디)
+  echoUnit: "phrase",      // 처음 단위
+  echoListenAcc: false,    // 듣기 때 반주도 같이 (처음 값)
+  echoGapSec: 0.5,         // 듣기가 끝나고 첫 음을 들려주기까지 쉬는 시간
+  echoPrimeSec: 0.6,       // 카운트인 전에 첫 음을 들려주는 길이
+  echoTailSec: 0.5,        // 구간이 끝난 뒤 조금 더 녹음
+  echoAutoNext: false,     // 정확도가 아래 값 이상이면 저절로 다음 구간 (처음 값)
+  echoAutoNextPct: 80,
+  echoAutoNextDelaySec: 1.5,
+  // 카운트인은 1마디다 (앱 재생기의 카운트인을 그대로 쓴다)
 
   // ---- 부르기 화면 (sing-mode.js)
   singLengths: [2, 4, 8],  // 한 번에 부를 마디 수로 고를 수 있는 것

@@ -21,8 +21,11 @@ import { noteName } from "../edits.js";
 const median = (a) => { const s = a.slice().sort((x, y) => x - y), k = s.length >> 1; return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2; };
 const r1 = (x) => Math.round(x * 10) / 10;
 
-// 판정 난이도 → 허용 센트
+// 판정 난이도 → 허용 센트, 박자 허용 ms
 export const tolerance = (opt = SING) => (opt.levels[opt.level] || opt.levels.normal).cents;
+export const timingTolerance = (opt = SING) => (opt.levels[opt.level] || opt.levels.normal).timingMs;
+// 기기 지연(초): 박자 보정으로 잰 값, 없으면 어림값
+export const latencyOf = (opt = SING) => ((typeof opt.latencyMs === "number" ? opt.latencyMs : opt.defaultLatencyMs) || 0) / 1000;
 
 // 연주 순서로 펼친 음(music.js 의 voiceLines(...).all 또는 .lines.top 등) 가운데 [fromBeat, toBeat) 에서 시작하는 음 → 목표 음 목록.
 // tl: 박 ↔ 초 지도(player.tl — ♩= 빠르기, rit., 페르마타가 반영된 것). base: fromBeat 가 소리 시계로 몇 초인지.
@@ -33,7 +36,7 @@ export function targetsFrom(notes, tl, fromBeat, toBeat, { base = 0, transpose =
   const out = [];
   for (const n of pick) {
     const t0 = base + tl.secOf(n.start) - s0, t1 = base + Math.min(tl.secOf(n.start + n.dur), sEnd) - s0;
-    const ref = { m: n.m, k: n.k, beat: n.beat, start: n.start, dur: n.dur, midi: n.midi + transpose, lyric: n.lyric || "", heads: n.heads || [] };
+    const ref = { m: n.m, k: n.k, beat: n.beat, start: n.start, dur: n.dur, midi: n.midi + transpose, lyric: n.lyric || "", heads: n.heads || [], fermata: !!n.fermata };
     const prev = out[out.length - 1];
     if (prev && Math.abs(prev.t0 - t0) * 1000 <= opt.sameStartMs) {      // 같이 시작하는 화음: 그중 하나를 부르면 된다
       prev.alts.push(n.midi + transpose);
@@ -93,6 +96,27 @@ export function scoreNote(target, frames, opt = SING) {
   return res;
 }
 
+// 음표 하나를 쉬운 말로 풀어 보기 (5단계 그래프 팝업): 평균 차이, 끝에서 떨어짐/올라감, 아래에서 긁어 올림
+// → { mean: 판정 구간의 평균 센트(없으면 null), drift: "drop" | "rise" | null, driftCents, scoop: 참/거짓 }
+export function describeNote(res, opt = SING) {
+  const judged = res.trace.filter((f) => f.skip === null && f.c !== null);
+  const avg = (a) => a.reduce((s, f) => s + f.c, 0) / a.length;
+  const out = { mean: judged.length ? r1(avg(judged)) : null, drift: null, driftCents: null, scoop: false };
+  if (judged.length >= 6 && (res.t1 - res.t0) * 1000 >= opt.driftMinMs) {
+    const cut = judged[0].t + (judged[judged.length - 1].t - judged[0].t) * 2 / 3;
+    const head = judged.filter((f) => f.t < cut), tail = judged.filter((f) => f.t >= cut);
+    if (head.length >= 2 && tail.length >= 2) {
+      const d = avg(tail) - avg(head);
+      out.driftCents = r1(d);
+      if (d <= -opt.driftCents) out.drift = "drop";
+      else if (d >= opt.driftCents) out.drift = "rise";
+    }
+  }
+  const early = res.trace.filter((f) => f.c !== null && f.t >= res.t0 && f.t < res.t0 + opt.scoopWindowMs / 1000).slice(0, 2);
+  if (early.length && judged.length && avg(early) <= -opt.scoopCents && avg(judged) - avg(early) >= opt.scoopCents) out.scoop = true;
+  return out;
+}
+
 // 부를 음이 있는 동안 목소리가 잡힌 비율 (0~1) — 마이크가 목소리를 얼마나 듣고 있는지 알려 주는 숫자
 function inSpan(targets, frames) {
   let all = 0, got = 0;
@@ -126,18 +150,87 @@ export function estimateLag(targets, frames, opt = SING) {
   return bestN >= opt.lagMinFrames ? Math.round(best * 1000) / 1000 : 0;
 }
 
+// ---- 박자 (6단계)
+const voicedF = (f) => f.pitch !== null && f.pitch !== undefined;
+// 소리가 커지는 순간: 바로 앞 0.1초의 가장 작은 크기보다 opt.onsetRiseDb 이상 커진 첫 순간 (자음으로 시작해도 여기서 잡힌다). frames 는 시각 순서
+function rises(frames, opt) {
+  const out = [];
+  let was = false;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    let mn = Infinity;
+    for (let j = i - 1; j >= 0 && frames[j].t >= f.t - 0.1; j--) mn = Math.min(mn, frames[j].db === undefined ? -120 : frames[j].db);
+    if (mn === Infinity) mn = -120;
+    const up = f.db !== undefined && f.db >= opt.minDb + 6 && f.db - mn >= opt.onsetRiseDb;
+    if (up && !was) out.push(i);
+    was = up;
+  }
+  return out;
+}
+
+// 음 시작 찾기: [lo, hi] 안에서 expected 에 가장 가까운 "소리가 커지는 순간"(그 뒤 0.15초 안에 목소리가 잡혀야 한다).
+// 없으면(이어 부르기 등) 음높이가 목표 음으로 들어온 첫 순간. 둘 다 없으면 null. frames: 지연을 뺀 시각
+export function findOnset(frames, target, lo, hi, opt = SING) {
+  const near = (p) => (target.alts || [target.midi]).some((m) => { let d = p - m; d -= 12 * Math.round(d / 12); return Math.abs(d) <= opt.onsetNearSemis; });
+  let best = null;
+  for (const i of rises(frames, opt)) {
+    const f = frames[i];
+    if (f.t < lo || f.t > hi) continue;
+    if (!frames.some((g) => g.t >= f.t && g.t <= f.t + 0.15 && voicedF(g))) continue;
+    if (best === null || Math.abs(f.t - target.t0) < Math.abs(best - target.t0)) best = f.t;
+  }
+  if (best !== null) return { t: best, by: "energy" };
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    if (f.t < lo || f.t > hi || !voicedF(f) || !near(f.pitch)) continue;
+    const prev = frames[i - 1];
+    if (!prev || !voicedF(prev) || !near(prev.pitch) || f.t - prev.t > 0.05) return { t: f.t, by: "pitch" };
+  }
+  return null;
+}
+
+// 음표 하나의 박자: 음 시작이 악보보다 몇 ms 빠르거나 늦은지, 부른 길이. res 를 고친다
+export function timeNote(res, target, frames, lo, hi, opt = SING) {
+  const tol = timingTolerance(opt);
+  if (res.verdict === "missed" || (opt.timingSkipFermata && target.ref && target.ref.fermata)) return res;
+  const on = findOnset(frames, target, lo, hi, opt);
+  if (!on) return res;
+  const offsetMs = Math.round((on.t - target.t0) * 1000);
+  const verdict = Math.abs(offsetMs) <= tol ? "ok" : offsetMs < 0 ? "early" : "late";
+  // 부른 길이: 음 시작부터 목표 음(옥타브 무시)을 마지막으로 내던 때까지
+  const near = (p) => { let d = p - res.target; d -= 12 * Math.round(d / 12); return Math.abs(d) <= 1; };
+  let end = on.t;
+  for (const f of frames) if (f.t >= on.t && f.t <= target.t1 + 0.2 && voicedF(f) && near(f.pitch)) end = f.t;
+  const scoreMs = Math.round((target.t1 - target.t0) * 1000), sungMs = Math.max(0, Math.round((end - on.t) * 1000 + opt.hopMs));
+  res.timing = { onset: on.t, by: on.by, offsetMs, verdict, tolMs: tol };
+  res.length = { scoreMs, sungMs, short: sungMs < scoreMs * opt.shortShare };
+  if (res.verdict === "ok" && verdict !== "ok") res.color = "timing";       // 음정은 맞고 박자만 벗어남 → 노랑
+  return res;
+}
+
 // 목표 음 여러 개 → 음표별 결과 + 요약 { total, ok, wrong, missed, high, low, accuracy: 정확 % (0~100, 인식 안 됨도 분모에 넣는다), lagMs, voicedShare }
 export function scoreAll(targets, frames, opt = SING) {
   const sorted = frames.slice().sort((a, b) => a.t - b.t);
   const lag = opt.autoLag ? estimateLag(targets, sorted, opt) : 0;
   const fr = lag ? sorted.map((f) => ({ ...f, t: f.t - lag })) : sorted;
   const notes = targets.map((t) => scoreNote(t, fr, opt));
+  // 박자: 음정과 달리 늦음을 저절로 맞추지 않는다(늦게 들어간 것을 알려 줘야 하니까). 기기 지연만 뺀다
+  const lat = latencyOf(opt), W = opt.onsetSearchMs / 1000;
+  const shifted = sorted.map((f) => ({ ...f, t: f.t - lat }));
+  targets.forEach((t, i) => {
+    const prev = targets[i - 1], next = targets[i + 1];
+    const lo = Math.max(t.t0 - W, prev ? (prev.t0 + t.t0) / 2 : -Infinity), hi = Math.min(t.t0 + W, next ? (t.t0 + next.t0) / 2 : Infinity);
+    timeNote(notes[i], t, shifted, lo, hi, opt);
+  });
   const count = (v) => notes.filter((n) => n.verdict === v).length;
+  const tv = (v) => notes.filter((n) => n.timing && n.timing.verdict === v).length;
   const total = notes.length, ok = count("ok");
   return {
     notes,
     summary: { total, ok, wrong: count("wrong"), missed: count("missed"), high: notes.filter((n) => n.dir === "high").length,
       low: notes.filter((n) => n.dir === "low").length, accuracy: total ? Math.round(ok / total * 100) : 0, level: opt.level, tolerance: tolerance(opt), octaveFree: !!opt.octaveFree,
-      lagMs: Math.round(lag * 1000), voicedShare: inSpan(targets, fr) },
+      lagMs: Math.round(lag * 1000), voicedShare: inSpan(targets, fr),
+      early: tv("early"), late: tv("late"), onTime: tv("ok"), timingOnly: notes.filter((n) => n.color === "timing").length,
+      latencyMs: Math.round(lat * 1000), latencyGuessed: typeof opt.latencyMs !== "number", timingTol: timingTolerance(opt) },
   };
 }
