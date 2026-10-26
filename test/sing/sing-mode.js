@@ -4,7 +4,7 @@
 // 고른 곳에 노래가 없으면(전주·간주) 노래가 나오는 마디로 저절로 옮긴다. 악보에서 마디를 누르면 거기서부터.
 import { PitchEngine, MicError } from "./pitch-engine.js";
 import { targetsFrom, scoreAll } from "./scoring.js";
-import { current } from "./settings.js";
+import { current, loadUser, saveUser } from "./settings.js";
 import { loadCss } from "./tuner.js";
 import { Overlay } from "./overlay.js";
 import { noteName } from "../edits.js";
@@ -78,6 +78,9 @@ export async function openSing(app) {
   const levelSel = sel(moreBox, "", Object.entries(S.levels).map(([k, v]) => [k, `${v.name} ±${v.cents}센트`]), S.level);
   levelSel.setAttribute("aria-label", "판정 난이도");
   const oct = chk(moreBox, "옥타브 무시", !!S.octaveFree);
+  const remember = () => saveUser({ ...loadUser(), level: levelSel.value, octaveFree: oct.checked });      // 고른 판정을 기기에 기억
+  levelSel.onchange = remember;
+  oct.onchange = remember;
   row2.append(more);
   // 3줄: [● 시작] 안내
   const row3 = h("div", "sing-go");
