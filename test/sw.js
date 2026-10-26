@@ -70,7 +70,10 @@ self.addEventListener("fetch", (e) => {
     // 앱 자체: 인터넷이 되면 새것, 끊겼거나 늦으면 저장해 둔 것
     e.respondWith(caches.open(CACHE).then(async (c) => {
       const saved = await caches.match(req, { ignoreSearch: true });
-      const net = fetch(req).then((res) => { if (res.ok) c.put(req, res.clone()); return res; });
+      // 화면 파일(js·css)은 브라우저가 잠시 들고 있는 것(GitHub Pages 는 10분)을 쓰지 않고 서버에 새것인지 물어본다:
+      // 새로 올린 직후 옛 파일과 새 파일이 섞이면 서로 맞지 않아 화면이 열리지 않는다(2026-10-27 노래 채점 시험판에서 겪음)
+      const net = (req.mode === "navigate" ? fetch(req) : fetch(req.url, { cache: "no-cache", credentials: "same-origin" }))
+        .then((res) => { if (res.ok) c.put(req, res.clone()); return res; });
       e.waitUntil(net.catch(() => {}));
       return freshOr(net, saved);
     }));
