@@ -23,7 +23,7 @@
 .sing-msg.err { color: var(--warn, #b3261e); font-weight: 600; }
 .sing-start { min-height: 52px; font-size: 1.05rem; }
 .sing-foot { margin: 0; text-align: center; }
-/* 판정 표·고르기 (tryout.js) */
+/* 판정 표·고르기 */
 .sing-opts { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .sing-sel { display: inline-flex; align-items: center; gap: 6px; }
 .sing-sel select { min-height: 44px; min-width: 44px; border-radius: 10px; border: 1px solid var(--line, #dfe3ec); background: var(--card, #fffdf8); padding: 0 8px; font: inherit; color: inherit; }
@@ -39,9 +39,30 @@
 .sing-table tr.v-ok td { color: var(--on, #1f6f5c); }
 .sing-table tr.v-wrong td { color: var(--warn, #b3261e); font-weight: 600; }
 .sing-table tr.v-missed td { color: var(--muted, #667089); }
-/* 불러보기 화면 (tryout.js) */
+/* 구간 고르기 (sing-mode.js) */
 .sing-screen [hidden] { display: none !important; }
 .sing-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sing-rangetext { flex: 1; min-width: 6em; text-align: center; font-size: 1.1rem; }
 .sing-more summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--muted, #667089); }
 .sing-more .sing-opts { padding: 4px 0 8px; }
+/* 부르기 화면 (sing-mode.js): 악보는 그대로 두고 아래 조작판 자리에 들어간다 */
+#practice.sing-on .dock { display: none; }
+.sing-panel { background: var(--card, #fffdf8); border-top: 1px solid var(--line, #dfe3ec); padding: 8px 10px calc(8px + var(--safe-b, 0px));
+  display: grid; gap: 6px; max-height: 48vh; overflow-y: auto; }
+.sing-panel [hidden] { display: none !important; }
+.sing-panel .sing-msg { font-size: .92rem; }
+.sing-go { display: flex; align-items: center; gap: 10px; }
+.sing-go .sing-start { flex: 0 0 auto; min-width: 104px; }
+.sing-go .sing-msg { flex: 1; }
+.sing-result { display: flex; align-items: center; gap: 8px; }
+.sing-result .sing-sum { flex: 1; }
+.sing-result .sing-sum:empty { display: none; }
+.sing-panel .sing-table { max-height: 30vh; overflow: auto; }
+/* 악보 위: 부를 구간, 판정 점, 틀린 음의 부른 음이름 */
+.score .mbox.sing-in, .score[data-cursor] .mbox.sing-in.cur { background: rgba(60, 120, 230, .10); box-shadow: inset 0 0 0 2px rgba(60, 120, 230, .55); }
+.sing-mark { position: absolute; width: 2.3%; aspect-ratio: 1; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 2; }
+.sing-mark.v-ok { background: rgba(30, 150, 90, .55); box-shadow: 0 0 0 2px rgba(30, 150, 90, .85); }
+.sing-mark.v-wrong { background: rgba(215, 40, 30, .5); box-shadow: 0 0 0 2px rgba(215, 40, 30, .9); }
+.sing-mark.v-missed { background: rgba(120, 120, 120, .25); box-shadow: 0 0 0 2px rgba(110, 110, 110, .8); }
+.sing-label { position: absolute; transform: translate(-50%, -190%); font-size: 11px; font-weight: 800; line-height: 1.2; color: #fff; background: rgba(200, 35, 25, .92);
+  border-radius: 6px; padding: 0 4px; white-space: nowrap; pointer-events: none; z-index: 3; }

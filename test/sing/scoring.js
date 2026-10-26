@@ -33,7 +33,7 @@ export function targetsFrom(notes, tl, fromBeat, toBeat, { base = 0, transpose =
   const out = [];
   for (const n of pick) {
     const t0 = base + tl.secOf(n.start) - s0, t1 = base + Math.min(tl.secOf(n.start + n.dur), sEnd) - s0;
-    const ref = { m: n.m, k: n.k, beat: n.beat, start: n.start, dur: n.dur, lyric: n.lyric || "", heads: n.heads || [] };
+    const ref = { m: n.m, k: n.k, beat: n.beat, start: n.start, dur: n.dur, midi: n.midi + transpose, lyric: n.lyric || "", heads: n.heads || [] };
     const prev = out[out.length - 1];
     if (prev && Math.abs(prev.t0 - t0) * 1000 <= opt.sameStartMs) {      // 같이 시작하는 화음: 그중 하나를 부르면 된다
       prev.alts.push(n.midi + transpose);
@@ -93,15 +93,51 @@ export function scoreNote(target, frames, opt = SING) {
   return res;
 }
 
-// 목표 음 여러 개 → 음표별 결과 + 요약 { total, ok, wrong, missed, high, low, accuracy: 정확 % (0~100, 인식 안 됨도 분모에 넣는다) }
+// 부를 음이 있는 동안 목소리가 잡힌 비율 (0~1) — 마이크가 목소리를 얼마나 듣고 있는지 알려 주는 숫자
+function inSpan(targets, frames) {
+  let all = 0, got = 0;
+  for (const f of frames) {
+    if (!targets.some((g) => f.t >= g.t0 && f.t < g.t1 + 0.3)) continue;
+    all++;
+    if (f.pitch !== null && f.pitch !== undefined) got++;
+  }
+  return all ? Math.round(got / all * 100) / 100 : 0;
+}
+
+// 부른 소리가 악보보다 얼마나 늦게(−면 일찍) 들어왔는지 찾는다(초). 폰은 마이크 소리가 0.1~0.3초 늦게 들어오고, 사람도 조금씩 늦게 들어간다.
+// 늦음을 바꿔 가며 "그 순간 악보의 음과 같은 음(옥타브 무시)을 내고 있던 시간"이 가장 긴 값을 고른다. 맞는 시간이 너무 적으면 0.
+// 박자 판정(6단계)과 별개로, 음정 판정이 늦음 때문에 앞 음을 섞어 보지 않게 하려는 것이다
+export function estimateLag(targets, frames, opt = SING) {
+  const voiced = frames.filter((f) => f.pitch !== null && f.pitch !== undefined);
+  if (!targets.length || voiced.length < 5) return 0;
+  const step = opt.lagStepMs / 1000, lo = opt.lagMinMs / 1000, hi = opt.lagMaxMs / 1000;
+  const near = (p, m) => { let d = p - m; d -= 12 * Math.round(d / 12); return Math.abs(d) <= 0.5; };
+  let best = 0, bestN = -1;
+  for (let lag = lo; lag <= hi + 1e-9; lag += step) {
+    let n = 0, j = 0;
+    for (const f of voiced) {
+      const t = f.t - lag;
+      while (j < targets.length && targets[j].t1 <= t) j++;
+      const g = targets[j];
+      if (g && g.t0 <= t && (g.alts || [g.midi]).some((m) => near(f.pitch, m))) n++;
+    }
+    if (n > bestN || (n === bestN && Math.abs(lag) < Math.abs(best))) { best = lag; bestN = n; }
+  }
+  return bestN >= opt.lagMinFrames ? Math.round(best * 1000) / 1000 : 0;
+}
+
+// 목표 음 여러 개 → 음표별 결과 + 요약 { total, ok, wrong, missed, high, low, accuracy: 정확 % (0~100, 인식 안 됨도 분모에 넣는다), lagMs, voicedShare }
 export function scoreAll(targets, frames, opt = SING) {
-  const fr = frames.slice().sort((a, b) => a.t - b.t);
+  const sorted = frames.slice().sort((a, b) => a.t - b.t);
+  const lag = opt.autoLag ? estimateLag(targets, sorted, opt) : 0;
+  const fr = lag ? sorted.map((f) => ({ ...f, t: f.t - lag })) : sorted;
   const notes = targets.map((t) => scoreNote(t, fr, opt));
   const count = (v) => notes.filter((n) => n.verdict === v).length;
   const total = notes.length, ok = count("ok");
   return {
     notes,
     summary: { total, ok, wrong: count("wrong"), missed: count("missed"), high: notes.filter((n) => n.dir === "high").length,
-      low: notes.filter((n) => n.dir === "low").length, accuracy: total ? Math.round(ok / total * 100) : 0, level: opt.level, tolerance: tolerance(opt), octaveFree: !!opt.octaveFree },
+      low: notes.filter((n) => n.dir === "low").length, accuracy: total ? Math.round(ok / total * 100) : 0, level: opt.level, tolerance: tolerance(opt), octaveFree: !!opt.octaveFree,
+      lagMs: Math.round(lag * 1000), voicedShare: inSpan(targets, fr) },
   };
 }

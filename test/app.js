@@ -1468,9 +1468,14 @@ $("singBtn").onclick = async () => {
   if (!cur) return;
   cur.player.pause();
   refreshPlay();
-  try { (await import("./sing/tryout.js")).openTryout({ sound, player: cur.player }); } catch (err) {
+  if ($("practice").classList.contains("sing-on")) return;
+  if (cur.ed.on) setEditing(false);
+  try {
+    (await import("./sing/sing-mode.js")).openSing({ sound, player: cur.player, pages: cur.pages, boxes: cur.boxes, score: $("score"), practice: $("practice"),
+      dock: document.querySelector("#practice .dock"), back: $("back"), scrollTo: (k) => { if (cur) scrollToMeasure(k); }, refresh: refreshAll, save });
+  } catch (err) {
     console.error(err);
-    pStatus("불러보기 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);
+    pStatus("부르기 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);
   }
 };
 
