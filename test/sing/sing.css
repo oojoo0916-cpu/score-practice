@@ -1,0 +1,41 @@
+/* 노래 채점 화면들. 앱의 색(style.css 의 --ink 등)을 그대로 쓴다. 누르는 것은 모두 44px 이상 */
+.sing-screen { position: fixed; inset: 0; z-index: 50; background: var(--bg, #f4f1ea); color: var(--ink, #1b2233); overflow-y: auto;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: max(8px, env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+.sing-head { display: flex; align-items: center; justify-content: space-between; min-height: 48px; }
+.sing-head b { font-size: 1.1rem; }
+.sing-close { border: 1px solid var(--line, #dfe3ec); background: var(--card, #fffdf8); }
+.sing-note { text-align: center; font-size: clamp(64px, 22vw, 120px); font-weight: 800; line-height: 1; margin-top: 4px; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+.sing-hz { text-align: center; color: var(--muted, #667089); font-variant-numeric: tabular-nums; }
+.sing-meter { position: relative; height: 44px; margin: 6px 4px 18px; border-radius: 10px; background: linear-gradient(90deg, #f3c2bd, #f6dcc0 30%, #cfe8de 45%, #cfe8de 55%, #f6dcc0 70%, #f3c2bd); }
+.sing-zone { position: absolute; top: 0; bottom: 0; left: 40%; width: 20%; border-left: 1px solid rgba(31,111,92,.5); border-right: 1px solid rgba(31,111,92,.5); }
+.sing-needle { position: absolute; top: -4px; bottom: -4px; left: 50%; width: 4px; margin-left: -2px; border-radius: 2px; background: var(--ink, #1b2233); transition: left .08s linear; }
+.sing-tick { position: absolute; top: 100%; margin-top: 2px; font-size: .78rem; color: var(--muted, #667089); }
+.sing-tick.l { left: 0; } .sing-tick.c { left: 50%; transform: translateX(-50%); } .sing-tick.r { right: 0; }
+.sing-cents { text-align: center; font-size: 1.15rem; font-weight: 700; min-height: 1.5em; font-variant-numeric: tabular-nums; }
+.sing-tuner[data-state="good"] .sing-note, .sing-tuner[data-state="good"] .sing-cents { color: var(--on, #1f6f5c); }
+.sing-tuner[data-state="warn"] .sing-note, .sing-tuner[data-state="warn"] .sing-cents { color: var(--accent, #d9822b); }
+.sing-tuner[data-state="bad"] .sing-note, .sing-tuner[data-state="bad"] .sing-cents { color: var(--warn, #b3261e); }
+.sing-tuner[data-state="none"] .sing-note { color: var(--muted, #667089); }
+.sing-tuner[data-state="good"] .sing-needle { background: var(--on, #1f6f5c); }
+.sing-tuner[data-state="bad"] .sing-needle { background: var(--warn, #b3261e); }
+.sing-graph { width: 100%; height: 34vh; min-height: 160px; max-height: 320px; background: var(--card, #fffdf8); border: 1px solid var(--line, #dfe3ec); border-radius: 12px; }
+.sing-msg { margin: 0; line-height: 1.5; }
+.sing-msg.err { color: var(--warn, #b3261e); font-weight: 600; }
+.sing-start { min-height: 52px; font-size: 1.05rem; }
+.sing-foot { margin: 0; text-align: center; }
+/* 채점 시험 화면 (debug.js) */
+.sing-opts { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.sing-sel { display: inline-flex; align-items: center; gap: 6px; }
+.sing-sel select { min-height: 44px; min-width: 44px; border-radius: 10px; border: 1px solid var(--line, #dfe3ec); background: var(--card, #fffdf8); padding: 0 8px; font: inherit; color: inherit; }
+.sing-chk { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; min-width: 44px; }
+.sing-chk input { width: 22px; height: 22px; }
+.sing-info { margin: 0; }
+.sing-big { text-align: center; font-size: clamp(26px, 8vw, 40px); font-weight: 800; min-height: 1.4em; font-variant-numeric: tabular-nums; }
+.sing-sum { margin: 0; font-weight: 600; }
+.sing-table { overflow-x: auto; }
+.sing-table table { width: 100%; border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; background: var(--card, #fffdf8); }
+.sing-table th, .sing-table td { padding: 6px 6px; border-bottom: 1px solid var(--line, #dfe3ec); text-align: center; white-space: nowrap; }
+.sing-table th { position: sticky; top: 0; background: var(--card, #fffdf8); color: var(--muted, #667089); font-weight: 600; }
+.sing-table tr.v-ok td { color: var(--on, #1f6f5c); }
+.sing-table tr.v-wrong td { color: var(--warn, #b3261e); font-weight: 600; }
+.sing-table tr.v-missed td { color: var(--muted, #667089); }
