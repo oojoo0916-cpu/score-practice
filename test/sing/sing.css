@@ -108,3 +108,7 @@
 .sing-dot.lead { background: #eceff5; box-shadow: inset 0 0 0 2px var(--line, #dfe3ec); }
 .sing-dot.on { background: var(--on, #1f6f5c); }
 .sing-dot.lead.on { background: var(--muted, #667089); }
+.sing-dot { display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; font-weight: 900; }
+.sing-dot.hit { background: var(--on, #1f6f5c); }
+.sing-dot.miss { background: #fff; box-shadow: inset 0 0 0 2px var(--warn, #b3261e); }
+.sing-heard { margin: 0; text-align: center; font-weight: 700; min-height: 1.4em; }

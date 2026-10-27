@@ -7,36 +7,35 @@ import { loadCss } from "./tuner.js";
 
 const h = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text != null) el.textContent = text; return el; };
 const median = (a) => { const s = a.slice().sort((x, y) => x - y), k = s.length >> 1; return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2; };
-const voiced = (f) => f.pitch !== null && f.pitch !== undefined;
-
-// "따" 소리의 시작들: 목소리가 opt.calibMinVoiceMs 이상 이어지는 곳의 시작. 바로 앞 0.08초 안에 소리가 커진 순간(자음 ㄸ)이 있으면 그때로.
-// 짧게 새어 들어온 박자 소리(0.05초)는 목소리로 치지 않는다
-export function voiceOnsets(frames, opt) {
+// "따" 소리의 시작들: 소리가 갑자기 커지는 순간 (바로 앞 0.12초의 가장 작은 크기보다 opt.calibRiseDb 이상, 크기가 opt.calibMinDb 이상).
+// 음높이는 보지 않는다 — "따!"는 짧게 끊는 소리라 음높이가 잡히는 시간이 짧다(2026-10-27 폰에서 거의 못 알아들었다).
+// 스피커에서 박자 소리가 마이크로 새어 들어와도 괜찮다: 새어 든 박자 소리도 내 소리와 똑같이 기기 지연만큼 늦게 들어오기 때문이다
+export function tapOnsets(frames, opt) {
   const out = [];
   for (let i = 0; i < frames.length; i++) {
-    if (!voiced(frames[i]) || (i > 0 && voiced(frames[i - 1]) && frames[i].t - frames[i - 1].t < 0.05)) continue;
-    let j = i;
-    while (j + 1 < frames.length && voiced(frames[j + 1]) && frames[j + 1].t - frames[j].t < 0.05) j++;
-    if ((frames[j].t - frames[i].t) * 1000 + opt.hopMs < opt.calibMinVoiceMs) continue;
-    let t = frames[i].t;
-    for (let k = i - 1; k >= 0 && frames[k].t >= frames[i].t - 0.08; k--) {
-      let mn = Infinity;
-      for (let q = k - 1; q >= 0 && frames[q].t >= frames[k].t - 0.1; q--) mn = Math.min(mn, frames[q].db === undefined ? -120 : frames[q].db);
-      if (frames[k].db !== undefined && frames[k].db - (mn === Infinity ? -120 : mn) >= opt.onsetRiseDb) t = frames[k].t;
-    }
-    out.push(t);
+    const f = frames[i];
+    if (f.db === undefined || f.db < opt.calibMinDb) continue;
+    let mn = Infinity;
+    for (let j = i - 1; j >= 0 && frames[j].t >= f.t - 0.12; j--) mn = Math.min(mn, frames[j].db === undefined ? -120 : frames[j].db);
+    if (mn === Infinity) mn = -120;
+    if (f.db - mn < opt.calibRiseDb) continue;
+    if (out.length && f.t - out[out.length - 1] < 0.2) continue;          // 한 소리에서 여러 번 세지 않는다
+    out.push(f.t);
   }
   return out;
 }
 
-// 박자 소리 시각들과 기록 → { latencyMs, matched, spreadMs, ok }. 박자 소리마다 그 뒤(−0.2 ~ +0.6초) 첫 "따"
+// 박자 소리 c 에 맞춘 "따": c−0.15 ~ c+0.55 초 안의 첫 소리 (없으면 null)
+export function tapFor(onsets, c) {
+  const o = onsets.find((t) => t >= c - 0.15 && t <= c + 0.55);
+  return o === undefined ? null : o;
+}
+
+// 박자 소리 시각들과 기록 → { latencyMs, matched, spreadMs, ok }
 export function calibrationResult(frames, clicks, opt) {
-  const ons = voiceOnsets(frames, opt);
+  const ons = tapOnsets(frames, opt);
   const diffs = [];
-  for (const c of clicks) {
-    const o = ons.find((t) => t >= c - 0.2 && t <= c + 0.6);
-    if (o !== undefined) diffs.push(o - c);
-  }
+  for (const c of clicks) { const o = tapFor(ons, c); if (o !== null) diffs.push(o - c); }
   if (!diffs.length) return { latencyMs: null, matched: 0, spreadMs: null, ok: false };
   const m = median(diffs), spread = median(diffs.map((d) => Math.abs(d - m)));
   const out = { latencyMs: Math.round(m * 1000), matched: diffs.length, spreadMs: Math.round(spread * 1000) };
@@ -61,9 +60,10 @@ export async function openCalibrate({ sound, onDone = () => {} }) {
   const dots = h("div", "sing-dots");
   const dotEls = [];
   for (let i = 0; i < S.calibLeadClicks + S.calibClicks; i++) { const d = h("span", "sing-dot" + (i < S.calibLeadClicks ? " lead" : "")); dots.append(d); dotEls.push(d); }
+  const heard = h("p", "sing-heard", "");
   const msg = h("p", "sing-msg", typeof now === "number" ? `지금 기억한 지연: ${(now / 1000).toFixed(2)}초` : "아직 보정하지 않았어요.");
   const btn = h("button", "btn primary sing-start", "시작");
-  root.append(head, intro, dots, msg, btn);
+  root.append(head, intro, dots, heard, msg, btn);
   document.body.append(root);
   const eng = new PitchEngine({ getCtx: () => sound.ensure(), settings: S });
   let busy = false, closed = false, raf = 0;
@@ -87,16 +87,26 @@ export async function openCalibrate({ sound, onDone = () => {} }) {
     const tick = () => {
       const t = ctx.currentTime;
       dotEls.forEach((d, i) => d.classList.toggle("on", t >= times[i] - 0.02));
+      const ons = tapOnsets(eng.liveFrames(), S);
+      for (let i = S.calibLeadClicks; i < n; i++) {
+        if (dotEls[i].dataset.done || t < times[i] + 0.65) continue;      // 그 박자의 "따"를 기다리는 시간이 지났다
+        const hit = tapFor(ons, times[i]) !== null;
+        dotEls[i].dataset.done = "1";
+        dotEls[i].classList.add(hit ? "hit" : "miss");
+        dotEls[i].textContent = hit ? "✓" : "";
+      }
+      heard.textContent = `들은 소리 ${dotEls.filter((d) => d.classList.contains("hit")).length} / ${S.calibClicks}`;
       if (t < times[n - 1] + 0.8 && !closed) { raf = requestAnimationFrame(tick); return; }
       const rec = eng.stopRecord();
       eng.stop();
       busy = false; btn.disabled = false; btn.textContent = "다시 하기";
       dotEls.forEach((d) => d.classList.remove("on"));
+      setTimeout(() => dotEls.forEach((d) => { d.classList.remove("hit", "miss"); delete d.dataset.done; d.textContent = ""; }), 4000);
       if (closed) return;
       const r = calibrationResult(rec ? rec.frames : [], times.slice(S.calibLeadClicks), S);
       if (!r.ok) {
         setMsg(r.matched < S.calibMinMatches
-          ? `"따" 소리를 ${r.matched}번밖에 못 들었어요. 폰을 입 가까이 두고 조금 더 크게, 박자 소리마다 한 번씩 "따!" 해 주세요.`
+          ? `"따" 소리를 ${r.matched}번밖에 못 들었어요(점에 ✓ 가 붙은 것만 들은 것). 폰을 입 가까이 두고 조금 더 크게, 박자 소리마다 한 번씩 짧게 "따!" 해 주세요.`
           : `소리 낸 때가 들쭉날쭉해요(±${(r.spreadMs / 1000).toFixed(2)}초). 박자 소리에 딱 맞춰 다시 한 번 해 주세요.`, true);
         return;
       }

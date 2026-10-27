@@ -119,13 +119,14 @@ export async function openPanel(app) {
   let nav = null;
   const unitSel = { echo: null, sing: null };
   const unitItems = (m) => {
-    const list = (m === "echo" ? S.echoUnits : ["phrase", ...S.singLengths]).map((u) => [String(u), u === "phrase" ? "프레이즈" : u + "마디"]);
+    if (m === "sing") return [["start", "처음부터"], ["here", "지금 마디부터"]];          // 반주와 부르기는 곡 끝까지 (2026-10-27 사용자 의견)
+    const list = S.echoUnits.map((u) => [String(u), u === "phrase" ? "프레이즈" : u + "마디"]);
     if (cfg.loop) list.push(["loop", "구간 반복"]);
     return list;
   };
   for (const m of Object.keys(MODES)) {
-    unitSel[m] = sel(unitBox, unitItems(m), cfg.loop ? "loop" : String(m === "echo" ? S.echoUnit : S.singMeasures), "구간 단위");
-    unitSel[m].onchange = () => pick(nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
+    unitSel[m] = sel(unitBox, unitItems(m), m === "sing" ? "start" : cfg.loop ? "loop" : String(S.echoUnit), m === "sing" ? "어디서부터 부를지" : "구간 단위");
+    unitSel[m].onchange = () => pick(m === "sing" ? player.kAt(player.pos) : nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
   }
   const measureN = (k) => song.measures[song.order[Math.min(K - 1, Math.max(0, k))]].n;
   const notes = () => { const i = +partSel.value, line = lineSel.value; return line === "all" ? player.vl[i].all : player.vl[i].lines[line] || []; };
@@ -133,6 +134,14 @@ export async function openPanel(app) {
   function clearResult() { closeNotePopup(); sum.textContent = ""; table.textContent = ""; table.hidden = true; tools.hidden = true; ov.clearMarks(); last = null; }
 
   function pick(k, dir = 0) {
+    if (mode === "sing") {                                         // 반주와 부르기: 고른 곳(처음 또는 지금 마디)부터 곡 끝까지
+      const k0 = unitSel.sing.value === "here" ? Math.max(0, Math.min(K - 1, k)) : 0;
+      const r = { k0, k1: K, from: player.starts[k0], to: player.totalBeats, noteFrom: player.starts[k0], noteTo: player.totalBeats, whole: true };
+      nav = { cur: notes().some((n) => n.start >= r.noteFrom - 1e-6) ? r : null, skipped: false, hasPrev: () => false, hasNext: () => false };
+      clearResult();
+      showRange("");
+      return;
+    }
     nav = new RangeNav({ notes: notes(), starts: player.starts, total: player.totalBeats, loop: cfg.loop, opt: S });
     nav.unit = unitSel[mode].value === "phrase" || unitSel[mode].value === "loop" ? unitSel[mode].value : +unitSel[mode].value;
     const r = dir > 0 ? (nav.at(k), nav.next()) || nav.cur : dir < 0 ? (nav.at(k), nav.prev()) || nav.cur : nav.at(k);
@@ -146,17 +155,19 @@ export async function openPanel(app) {
   }
   const READY = () => (mode === "echo"
     ? "멜로디를 듣고 → 첫 음 → 박자 한 마디를 센 다음, 반주 없이 따라 불러요. 부르는 동안 앱 소리는 나지 않아요."
-    : (hasAcc ? "박자를 세고 반주가 나오면 같이 부르세요. 이어폰을 끼면 반주 소리가 마이크에 섞이지 않아 더 정확해요." : "박자 소리에 맞춰 부르세요."))
+    : (hasAcc ? "반주가 나오면 곡 끝까지 같이 부르세요. 지나간 음표는 바로바로 색칠돼요. 이어폰을 끼면 반주 소리가 마이크에 섞이지 않아 더 정확해요."
+      : "박자 소리에 맞춰 곡 끝까지 부르세요."))
     + " 악보에서 마디를 누르면 거기서부터 해요.";
   function showRange(note = "") {
     const r = nav.cur;
     if (!r) { rangeText.textContent = "—"; prev.disabled = next.disabled = true; ov.range(0, 0); setMsg("이 곡에는 고른 노래 줄의 음이 없어요.", true); go.disabled = true; return; }
     go.disabled = false;
     const a = measureN(r.k0), b = measureN(r.k1 - 1), ly = lyricsOf(r);
-    rangeText.textContent = (a === b ? `${a}마디` : `${a} ~ ${b}마디`) + (ly ? ` · ${ly}` : "");
+    if (r.whole) rangeText.textContent = r.k0 === 0 ? `처음부터 끝까지 (${b}마디)` : `${a}마디부터 끝까지`;
+    else rangeText.textContent = (a === b ? `${a}마디` : `${a} ~ ${b}마디`) + (ly ? ` · ${ly}` : "");
     prev.disabled = !nav.hasPrev();
     next.disabled = !nav.hasNext();
-    ov.range(r.k0, r.k1);
+    ov.range(r.k0, r.whole ? r.k0 + 1 : r.k1);                     // 곡 끝까지 부를 때는 시작 마디만 칠한다
     app.scrollTo(r.k0);
     setMsg(note || READY());
     go.textContent = mode === "echo" ? "▶ 듣고 부르기" : "● 시작";
@@ -175,6 +186,7 @@ export async function openPanel(app) {
     echoOpts.hidden = m !== "echo";
     singOpts.hidden = m !== "sing";
     for (const [k, s] of Object.entries(unitSel)) s.parentNode.hidden = k !== m;
+    prev.hidden = next.hidden = m === "sing";
     pick(nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
   }
   partSel.parentNode.hidden = player.parts.length < 2;
@@ -203,7 +215,7 @@ export async function openPanel(app) {
   const onScoreTap = (e) => {
     if (job) { e.stopPropagation(); e.preventDefault(); return; }
     if (!e.target.closest || !e.target.closest(".mbox")) return;
-    setTimeout(() => { if (job || closed) return; pick(player.kAt(player.pos)); }, 0);
+    setTimeout(() => { if (job || closed) return; if (mode === "sing") unitSel.sing.value = "here"; pick(player.kAt(player.pos)); }, 0);
   };
   app.score.addEventListener("click", onScoreTap, true);
 
@@ -243,6 +255,8 @@ export async function openPanel(app) {
     const first = list.find((n) => n.start >= r.noteFrom - 1e-6 && n.start < r.noteTo - 1e-6);
     return { player, sound, eng, S, me: player.parts[+partSel.value].id, line: lineSel.value, range: r, list, job: j,
       first: first ? first.midi + (cfg.transpose || 0) : 60, withAcc: accOn.checked, hasAcc, melody: melOn.checked,
+      // 카운트인: 첫 음이 시작 마디 안에 있을 때만 (전주가 있으면 전주가 박자를 알려 준다)
+      countIn: !first || first.start < (r.k0 + 1 < K ? player.starts[r.k0 + 1] : player.totalBeats) - 1e-6,
       status: (t) => setMsg(t) };
   };
 
@@ -267,10 +281,32 @@ export async function openPanel(app) {
         if (fullEcho) { setMsg("이제 따라 부를 차례예요"); await sleep(S.echoGapSec * 1000); }
         if (j.cancelled) return;
         took = await Echo.sing(ctl);
-      } else took = await Sing.sing(ctl);
+      } else {
+        const live = { targets: null, next: 0, notes: [], at: 0 };
+        ctl.live = (t, T) => {
+          if (t - live.at < S.liveEverySec) return;
+          live.at = t;
+          if (!live.targets) live.targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt });
+          let k = live.next;
+          while (k < live.targets.length && live.targets[k].t1 + S.liveWaitSec < t) k++;
+          if (k === live.next) return;
+          const batch = live.targets.slice(live.next, k), from = batch[0].t0 - S.liveContextSec;
+          const res = scoreAll(batch, eng.liveFrames().filter((f) => f.t >= from), opt);
+          live.notes.push(...res.notes);
+          live.next = k;
+          ov.results(live.notes, { partId: player.parts[+partSel.value].id, transpose: cfg.transpose || 0 });
+          const ok = live.notes.filter((n) => n.verdict === "ok").length;
+          sum.textContent = `지금까지 정확 ${Math.round(ok / live.notes.length * 100)}% (${live.notes.length}음)`;
+        };
+        took = await Sing.sing(ctl);
+      }
       if (!took) return;
-      const targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: took.T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt });
-      show({ ...scoreAll(targets, took.rec ? took.rec.frames : [], opt), opt }, took.rec, ctl.range);
+      let targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: took.T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt });
+      if (took.cancelled) {                                        // 중간에 그만: 그때까지 부른 음만 채점한다
+        targets = targets.filter((g) => g.t1 <= took.stopAt + 0.05);
+        if (!targets.length) return;
+      }
+      show({ ...scoreAll(targets, took.rec ? took.rec.frames : [], opt), opt }, took.rec, ctl.range, took.cancelled);
     } catch (err) {
       console.error(err);
       setMsg("하다가 멈췄어요: " + (err && err.message), true);
@@ -307,9 +343,9 @@ export async function openPanel(app) {
     if (out && last && last.res.summary.latencyGuessed) out += " · 박자 보정 전이라 어림";
     return out;
   };
-  function show(res, rec, range) {
+  function show(res, rec, range, partial = false) {
     const s = res.summary;
-    sum.textContent = `정확 ${s.accuracy}% — 정확 ${s.ok} · 틀림 ${s.wrong} · 인식 안 됨 ${s.missed} (음표 ${s.total}개)`
+    sum.textContent = (partial ? "멈춘 곳까지 " : "") + `정확 ${s.accuracy}% — 정확 ${s.ok} · 틀림 ${s.wrong} · 인식 안 됨 ${s.missed} (음표 ${s.total}개)`
       + ` · 박자: 빠른 음 ${s.early} · 늦은 음 ${s.late}` + (s.latencyGuessed ? " (보정 전 어림)" : "");
     ov.results(res.notes, { partId: player.parts[+partSel.value].id, transpose: cfg.transpose || 0, onTap: tapNote });
     app.scrollTo(range.k0);

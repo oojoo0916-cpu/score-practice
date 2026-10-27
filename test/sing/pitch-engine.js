@@ -74,6 +74,26 @@ export class Smoother {
 
 const NONE = { hz: 0, name: "", midi: null, cents: null, pitch: null };
 
+// 녹음해 두는 소리: 분석용으로 줄인 소리(초당 16000점쯤, 목소리에는 충분하다)를 토막으로 모은다.
+// 원래 소리(48000점)를 그대로 두면 곡 하나(3~4분)에 수십 MB 라 폰 메모리가 모자랄 수 있다
+class RecBuf {
+  constructor(max) { this.max = max; this.blocks = []; this.cur = new Float32Array(16384); this.pos = 0; this.n = 0; this.t0 = null; }
+  add(y, t) {
+    if (this.n >= this.max) return;
+    if (this.t0 === null) this.t0 = t;
+    if (this.pos === this.cur.length) { this.blocks.push(this.cur); this.cur = new Float32Array(16384); this.pos = 0; }
+    this.cur[this.pos++] = y;
+    this.n++;
+  }
+  toArray() {
+    const out = new Float32Array(this.n);
+    let k = 0;
+    for (const b of this.blocks) { out.set(b, k); k += b.length; }
+    out.set(this.cur.subarray(0, this.pos), k);
+    return out;
+  }
+}
+
 // 들어오는 소리를 받아 hop 마다 음높이 기록 하나를 내놓는다. sr: 원래 소리의 초당 점 수.
 // push(data, t0): data = 소리 조각, t0 = 그 첫 점의 소리 시계(초). 기록의 t 는 들여다본 토막의 가운데 시각이다
 export class Analyzer {
@@ -90,6 +110,7 @@ export class Analyzer {
     this.frame = new Float32Array(this.win);
     this.smooth = new Smoother(opt.medianFrames);
     this.silentSince = null;
+    this.keep = null;                      // 녹음 중이면 RecBuf (줄인 소리를 모은다)
     // 줄이기 전에 높은 소리를 걸러 낸다 (줄일 때 높은 소리가 낮은 소리로 섞여 들지 않게): 2차 저역 필터, 차단 = 줄인 뒤 범위의 40%
     const fc = Math.min(0.45 * sr, 0.4 * this.ar), q = Math.SQRT1_2, w0 = 2 * Math.PI * fc / sr, al = Math.sin(w0) / (2 * q), cs = Math.cos(w0), a0 = 1 + al;
     this.bq = { b0: (1 - cs) / 2 / a0, b1: (1 - cs) / a0, b2: (1 - cs) / 2 / a0, a1: -2 * cs / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
@@ -102,6 +123,7 @@ export class Analyzer {
       const y = f > 1 ? bq.b0 * x + bq.b1 * bq.x1 + bq.b2 * bq.x2 - bq.a1 * bq.y1 - bq.a2 * bq.y2 : x;
       if (f > 1) { bq.x2 = bq.x1; bq.x1 = x; bq.y2 = bq.y1; bq.y1 = y; }
       if (this.phase++ % f) continue;
+      if (this.keep) this.keep.add(y, t0 + i / this.sr);
       this.ring[this.w] = y;
       this.w = (this.w + 1) % this.win;
       if (this.filled < this.win) this.filled++;
@@ -217,7 +239,6 @@ export class PitchEngine {
 
   chunk(data, t0) {
     if (!this.running) return;
-    if (this.rec && this.rec.len < this.rec.max) { this.rec.audio.push(data); this.rec.len += data.length; if (this.rec.t0a === null) this.rec.t0a = t0; }
     this.analyzer.push(data, t0);
   }
 
@@ -227,27 +248,30 @@ export class PitchEngine {
     this.onPitch(p);
   }
 
-  // 지금부터 음높이 기록과 원본 소리를 모은다
+  // 지금부터 음높이 기록과 소리를 모은다
   startRecord() {
-    const sr = this.ctx ? this.ctx.sampleRate : 48000;
-    this.rec = { t0: this.ctx ? this.ctx.currentTime : 0, frames: [], audio: [], len: 0, t0a: null, max: Math.round(this.opt.maxRecordSec * sr) };
+    this.rec = { t0: this.ctx ? this.ctx.currentTime : 0, frames: [] };
+    if (this.analyzer) this.analyzer.keep = new RecBuf(Math.round(this.opt.maxRecordSec * this.analyzer.ar));
   }
 
-  // 모은 것을 돌려주고 그만 모은다 → { t0, t1, frames: [기록...], audio: Float32Array (원본 소리), audioT0: 그 첫 점의 시각, sampleRate }
+  // 녹음하는 동안 지금까지의 음높이 기록 (부르는 중에 색칠하기·박자 보정 점 표시용)
+  liveFrames() { return this.rec ? this.rec.frames : []; }
+
+  // 모은 것을 돌려주고 그만 모은다 → { t0, t1, frames: [기록...], audio: Float32Array (소리, 줄인 것), audioT0: 그 첫 점의 시각, sampleRate }
   stopRecord() {
-    const r = this.rec;
+    const r = this.rec, a = this.analyzer, keep = a && a.keep;
     this.rec = null;
+    if (a) a.keep = null;
     if (!r) return null;
-    const audio = new Float32Array(r.len);
-    let k = 0;
-    for (const a of r.audio) { audio.set(a.subarray(0, Math.min(a.length, r.len - k)), k); k += a.length; if (k >= r.len) break; }
-    return { t0: r.t0, t1: this.ctx ? this.ctx.currentTime : r.t0, frames: r.frames, audio, audioT0: r.t0a, sampleRate: this.ctx ? this.ctx.sampleRate : 48000 };
+    return { t0: r.t0, t1: this.ctx ? this.ctx.currentTime : r.t0, frames: r.frames, audio: keep ? keep.toArray() : new Float32Array(0),
+      audioT0: keep && keep.t0 !== null ? keep.t0 : r.t0, sampleRate: a ? a.ar : 16000 };
   }
 
   // 마이크를 끈다. 반주와 같이 쓰는 소리 시계는 끄지 않는다
   stop() {
     this.running = false;
     this.rec = null;
+    if (this.analyzer) this.analyzer.keep = null;
     try { if (this.node && this.node.port) { this.node.port.postMessage("stop"); this.node.port.onmessage = null; } } catch (err) { /* 이미 끊김 */ }
     if (this.node) { this.node.onaudioprocess = null; try { this.node.disconnect(); } catch (err) { /* 이미 끊김 */ } }
     if (this.src) try { this.src.disconnect(); } catch (err) { /* 이미 끊김 */ }

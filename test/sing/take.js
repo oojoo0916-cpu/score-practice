@@ -43,7 +43,7 @@ export const MIX = {
     cfg.countIn = true;
   },
   // 반주와 부르기: 부를 줄만 끈다(melodyVol 이 있으면 작게). withAcc 가 아니면 반주도 끄고 메트로놈
-  accomp: (player, me, { withAcc, hasAcc, melodyVol }) => (cfg) => {
+  accomp: (player, me, { withAcc, hasAcc, melodyVol, countIn = true }) => (cfg) => {
     for (const p of player.parts) if (p.id === me) { const t = track(cfg, p.id); t.mute = !melodyVol; if (melodyVol) t.vol = melodyVol; }
     if (!hasAcc) cfg.metro = withAcc;
     else if (!withAcc) {
@@ -51,7 +51,7 @@ export const MIX = {
       if (cfg.tracks.chord) cfg.tracks.chord.mute = true;
       cfg.metro = true;
     }
-    cfg.countIn = true;
+    cfg.countIn = countIn;                                         // 전주가 있으면 카운트인 없이 (전주가 박자를 알려 준다)
   },
 };
 

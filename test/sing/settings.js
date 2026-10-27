@@ -17,7 +17,7 @@ export const SING = {
   minDb: -52,              // 소리 크기(dBFS)가 이보다 작으면 "음 없음" — 무음
   medianFrames: 5,         // 튀는 값(옥타브 점프 등)을 다듬는 중앙값 필터의 길이(구한 값 개수)
   gapResetMs: 80,          // "음 없음"이 이만큼 이어지면 다듬기를 처음부터 다시 한다 (앞 음이 다음 음에 섞이지 않게)
-  maxRecordSec: 600,       // 원본 소리 녹음을 최대 몇 초까지 보관할지 (폰 메모리 보호)
+  maxRecordSec: 600,       // 소리 녹음을 최대 몇 초까지 보관할지 (줄인 소리로 담는다 — 10분에 약 38MB)
 
   // ---- 채점 (scoring.js)
   levels: {                // 판정 난이도: 부른 중심 음이 목표 음에서 ±몇 센트 안이면 "정확"
@@ -51,9 +51,10 @@ export const SING = {
   calibClicks: 8,          // 박자 보정: 이만큼의 박자 소리에 맞춰 "따"
   calibLeadClicks: 2,      //            앞에 듣기만 하는 박자 소리
   calibIntervalSec: 0.75,  //            박자 소리 간격 (♩=80)
-  calibMinVoiceMs: 80,     //            이보다 짧은 소리는 "따"가 아니라 박자 소리가 새어 들어온 것으로 본다
+  calibMinDb: -48,         //            "따"로 칠 가장 작은 소리 크기(dBFS)
+  calibRiseDb: 10,         //            바로 앞보다 이만큼(dB) 갑자기 커지면 "따"의 시작 (음높이는 보지 않는다 — 짧게 끊는 소리라서)
   calibMinMatches: 5,      //            이만큼은 맞춰야 보정값을 저장한다
-  calibMaxSpreadMs: 80,    //            맞춘 시각들이 이보다 들쭉날쭉하면 다시 하자고 한다
+  calibMaxSpreadMs: 100,   //            맞춘 시각들이 이보다 들쭉날쭉하면 다시 하자고 한다
 
   // ---- 음표 그래프 팝업 (note-popup.js, scoring.describeNote)
   driftCents: 20,          // 음 끝 1/3 의 평균이 앞부분보다 이만큼 낮으면 "끝에서 떨어짐", 높으면 "끝에서 올라감"
@@ -90,9 +91,12 @@ export const SING = {
   echoAutoNextDelaySec: 1.5,
   // 카운트인은 1마디다 (앱 재생기의 카운트인을 그대로 쓴다)
 
+  // ---- 반주와 부르기: 부르는 동안 지나간 음표 색칠 (panel.js)
+  liveEverySec: 1.0,       // 몇 초마다 색칠할지
+  liveWaitSec: 0.35,       // 음이 끝나고 이만큼 지나야 그 음을 색칠한다 (늦게 들어오는 소리까지 기다린다)
+  liveContextSec: 3,       // 색칠할 때 그 음 앞 몇 초의 기록까지 보고 늦음을 맞출지
+
   // ---- 부르기 화면 (sing-mode.js)
-  singLengths: [2, 4, 8],  // 한 번에 부를 마디 수로 고를 수 있는 것
-  singMeasures: 4,         // 처음에 고른 마디 수
   singTailSec: 0.5,        // 구간이 끝난 뒤 조금 더 녹음 (늦게 끝나는 음)
   singPrimeSec: 0.6,       // 카운트인 첫 박에 첫 음을 들려주는 길이
   singMelodyVol: 0.3,      // "멜로디 작게"를 켰을 때 멜로디 소리 크기 (보통 0.85)
