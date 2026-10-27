@@ -17,6 +17,7 @@ export const SING = {
   minDb: -52,              // 소리 크기(dBFS)가 이보다 작으면 "음 없음" — 무음
   medianFrames: 5,         // 튀는 값(옥타브 점프 등)을 다듬는 중앙값 필터의 길이(구한 값 개수)
   gapResetMs: 80,          // "음 없음"이 이만큼 이어지면 다듬기를 처음부터 다시 한다 (앞 음이 다음 음에 섞이지 않게)
+  micIdleOffSec: 60,       // 부르기 칸을 열어 둔 채 이만큼 안 부르면 마이크를 끈다 (다시 부를 때 저절로 켠다)
   maxRecordSec: 600,       // 소리 녹음을 최대 몇 초까지 보관할지 (줄인 소리로 담는다 — 10분에 약 38MB)
 
   // ---- 채점 (scoring.js)
@@ -90,6 +91,34 @@ export const SING = {
   echoAutoNextPct: 80,
   echoAutoNextDelaySec: 1.5,
   // 카운트인은 1마디다 (앱 재생기의 카운트인을 그대로 쓴다)
+
+  // ---- 스피커로 반주를 틀 때 (8단계, scoring.speakerFilter · pitch-engine 의 후보)
+  output: "earphones",     // 처음 값: "earphones" 이어폰 | "speaker" 스피커 (스피커면 아래 거르기를 쓴다)
+  candThreshold: 0.4,      // 음 찾기에서 이 문턱 아래인 골은 모두 후보로 남긴다
+  maxCands: 4,             // YIN 후보를 몇 개까지
+  hsHarmonics: 5,          // 배음 합: 몇 번째 배음까지 더할지
+  hsDecay: 0.84,           //         위 배음일수록 이만큼씩 덜 쳐 준다
+  hsStepCents: 10,         //         음높이를 몇 센트 간격으로 훑을지
+  hsMinRel: 0.35,          //         가장 큰 봉우리의 이 배 넘는 봉우리만 후보로
+  hsTopN: 4,               //         후보를 몇 개까지
+  candMinClarity: 0.55,    // 후보의 또렷함이 이보다 낮으면 버린다
+  accMatchCents: 40,       // 후보가 지금 울리는 반주 음(또는 그 2·3·4배, 반 옥타브 아래)에서 이 센트 안이면 반주 소리로 보고 뺀다
+  accRingSec: 0.4,         // 반주 음이 끝난 뒤에도 이만큼은 울린다고 본다 (피아노 울림)
+  searchSemis: 7,          // 목소리는 목표 음에서 ±이 반음 안에서 찾는다
+  sustainMinMs: 150,       // 이보다 짧으면서
+  decayDb: 5,              //   이만큼(dB) 줄어드는 소리는 "치고 사그라드는 소리"(피아노)로 보고 뺀다 — 목소리는 유지된다
+  ambShare: 0.5,           // 목표 음과 같은 음을 반주가 음 길이의 이 비율 넘게 치면 "애매" (점수에 넣지 않는다)
+  speakerVolHint: 0.6,     // 스피커인데 반주 크기가 이보다 크면 "반주를 조금 줄이면 더 정확해요"
+  speakerTestSec: 8,       // "반주만 틀고 시험" 길이
+  speakerTestOkPct: 10,    // 그 시험에서 거른 뒤에도 이 % 넘게 목소리로 잡히면 "반주를 줄이거나 이어폰을" 안내
+
+  // ---- 반주와 부르기: 반주 크기, 노래방식 화면 (karaoke.js)
+  accVol: 0.7,             // 반주 크기 처음 값 (0~1, 설정 창에서 바꾸면 기억)
+  karaPastSec: 2,          // 노래방 화면: 지금 위치 왼쪽에 보여 줄 지난 시간
+  karaAheadSec: 4,         //              오른쪽에 보여 줄 앞으로의 시간
+  karaPlayheadAt: 0.3,     //              지금 위치 세로줄을 화면 너비의 몇 번째에
+  karaMinSemis: 10,        //              위아래로 적어도 반음 몇 개만큼 보여 줄지
+  karaFilterFrames: 400,   //              스피커일 때 걸러서 그릴 최근 기록 수 (약 6초)
 
   // ---- 반주와 부르기: 부르는 동안 지나간 음표 색칠 (panel.js)
   liveEverySec: 1.0,       // 몇 초마다 색칠할지

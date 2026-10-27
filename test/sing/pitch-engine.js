@@ -27,12 +27,13 @@ export function rmsDb(x) {
   return 10 * Math.log10(s / Math.max(1, x.length) + 1e-12);
 }
 
-// YIN: 한 토막(x, 초당 sr 점)에서 기본 주파수를 찾는다. → { hz (못 찾으면 0), conf: 또렷함 0~1 }
+// YIN: 한 토막(x, 초당 sr 점)에서 기본 주파수를 찾는다. → { hz (못 찾으면 0), conf: 또렷함 0~1, cands: [{ hz, conf }] }
+// cands: 골이 여럿이면 그 후보들(또렷한 순, 가장 그럴듯한 것 포함) — 스피커로 반주가 섞일 때 반주 음을 빼고 목소리를 고르는 데 쓴다(8단계)
 export function detectPitch(x, sr, opt = SING) {
   const tauMin = Math.max(2, Math.floor(sr / opt.maxHz));
   const tauMax = Math.floor(sr / opt.minHz);
   const w = x.length - tauMax;
-  if (tauMax <= tauMin + 2 || w < tauMax) return { hz: 0, conf: 0 };        // 토막이 가장 낮은 음 두 주기보다 짧다
+  if (tauMax <= tauMin + 2 || w < tauMax) return { hz: 0, conf: 0, cands: [] };        // 토막이 가장 낮은 음 두 주기보다 짧다
   const d = new Float32Array(tauMax + 2);
   for (let tau = 1; tau <= tauMax + 1; tau++) {
     let s = 0;
@@ -52,12 +53,73 @@ export function detectPitch(x, sr, opt = SING) {
   if (tau < 0) { tau = tauMin; for (let t = tauMin + 1; t <= tauMax; t++) if (dn[t] < dn[tau]) tau = t; }
   const conf = Math.max(0, Math.min(1, 1 - dn[tau]));
   // 골 바닥을 포물선으로 다듬어 한 칸보다 잘게 (높은 음에서 몇 센트까지 맞추려면 필요하다)
-  let ft = tau;
-  if (tau > 1 && tau <= tauMax) {
-    const a = dn[tau - 1], b = dn[tau], c = dn[tau + 1], den = a - 2 * b + c;
-    if (den > 0) ft = tau + Math.max(-1, Math.min(1, 0.5 * (a - c) / den));
+  const refine = (t) => {
+    if (t <= 1 || t > tauMax) return t;
+    const a = dn[t - 1], b = dn[t], c = dn[t + 1], den = a - 2 * b + c;
+    return den > 0 ? t + Math.max(-1, Math.min(1, 0.5 * (a - c) / den)) : t;
+  };
+  // 다른 골들(후보): 이웃보다 낮고 문턱(candThreshold) 아래인 곳. 이미 고른 골과 거의 같은 주기는 빼고, 또렷한 순으로 몇 개만
+  const cands = [{ hz: sr / refine(tau), conf }];
+  const others = [];
+  for (let t = tauMin + 1; t < tauMax; t++) {
+    if (dn[t] < (opt.candThreshold || 0) && dn[t] <= dn[t - 1] && dn[t] < dn[t + 1] && Math.abs(t - tau) > 1) others.push(t);
   }
-  return { hz: sr / ft, conf };
+  others.sort((a, b) => dn[a] - dn[b]);
+  for (const t of others.slice(0, Math.max(0, (opt.maxCands || 1) - 1))) cands.push({ hz: sr / refine(t), conf: Math.max(0, 1 - dn[t]) });
+  return { hz: cands[0].hz, conf, cands };
+}
+
+// ---- 섞인 소리의 후보 (8단계): 소리를 주파수별로 나눠(FFT) 음마다 "배음이 얼마나 센지"를 더해 본다(배음 합).
+// YIN 은 섞인 소리에서 두 음의 "가운데쯤"을 하나 내놓지만, 배음 합은 목소리와 피아노 음을 따로 봉우리로 보여 준다.
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ar = re[i + k], ai = im[i + k], br = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci, bi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+        re[i + k] = ar + br; im[i + k] = ai + bi; re[i + k + len / 2] = ar - br; im[i + k + len / 2] = ai - bi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+const HS_N = 2048;
+const hsBuf = { re: new Float64Array(HS_N), im: new Float64Array(HS_N), mag: new Float64Array(HS_N / 2) };
+
+// → [{ hz, conf }] 배음 합이 큰 순 (가장 큰 것의 opt.hsMinRel 배 넘는 봉우리만, opt.hsTopN 개까지)
+export function harmonicCands(x, sr, opt = SING) {
+  const { re, im, mag } = hsBuf, n = Math.min(x.length, HS_N);
+  re.fill(0); im.fill(0);
+  for (let i = 0; i < n; i++) re[i] = x[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)));      // 한 토막의 양 끝을 부드럽게
+  fft(re, im);
+  for (let k = 0; k < HS_N / 2; k++) mag[k] = Math.hypot(re[k], im[k]);
+  const binOf = (f) => f * HS_N / sr, at = (f) => { const b = Math.round(binOf(f)); return b > 0 && b < HS_N / 2 - 1 ? Math.max(mag[b - 1], mag[b], mag[b + 1]) : 0; };
+  const grid = [], hs = [];
+  for (let c = 1200 * Math.log2(opt.minHz / 440); c <= 1200 * Math.log2(opt.maxHz / 440); c += opt.hsStepCents) {
+    const f = 440 * Math.pow(2, c / 1200);
+    let sum = 0, w = 1;
+    for (let h = 1; h <= opt.hsHarmonics && h * f < sr / 2; h++) { sum += w * at(h * f); w *= opt.hsDecay; }
+    grid.push(f); hs.push(sum);
+  }
+  const top = Math.max(...hs);
+  if (!(top > 0)) return [];
+  const span = Math.max(1, Math.round(30 / opt.hsStepCents)), peaks = [];
+  for (let i = 0; i < hs.length; i++) {
+    if (hs[i] < top * opt.hsMinRel) continue;
+    let isPeak = true;
+    for (let j = Math.max(0, i - span); j <= Math.min(hs.length - 1, i + span); j++) if (hs[j] > hs[i]) { isPeak = false; break; }
+    if (isPeak) peaks.push(i);
+  }
+  peaks.sort((a, b) => hs[b] - hs[a]);
+  return peaks.slice(0, opt.hsTopN).map((i) => ({ hz: grid[i], conf: Math.round(hs[i] / top * 0.9 * 100) / 100 }));
 }
 
 // 튀는 값을 다듬는다: 최근 n 개의 중앙값. 옥타브를 한두 번 잘못 잡아도 사라진다
@@ -141,12 +203,19 @@ export class Analyzer {
     let out;
     if (db < o.minDb) out = { t, ...NONE, conf: 0, db };
     else {
-      const { hz, conf } = detectPitch(fr, this.ar, o);
-      if (!hz || conf < o.minClarity || hz < o.minHz * 0.97 || hz > o.maxHz * 1.03) out = { t, ...NONE, conf, db };
+      const { hz, conf, cands: yc } = detectPitch(fr, this.ar, o);
+      // 후보 = YIN 의 골들 + 배음 합의 봉우리 (거의 같은 음은 하나로)
+      // 배음 합(FFT)은 스피커일 때만 — 이어폰이면 반주가 섞이지 않아 필요 없고, 폰에서 계산을 아낀다
+      const hc = o.output === "speaker" ? harmonicCands(fr, this.ar, o) : [];
+      const cands = [...yc.map((c) => ({ ...c, src: "y" })), ...hc.map((c) => ({ ...c, src: "h" }))];
+      // 후보들(다듬지 않은 소수 음높이): 스피커로 반주가 섞일 때 쓴다. 범위 밖은 뺀다
+      const cp = cands.filter((c) => c.hz >= o.minHz * 0.97 && c.hz <= o.maxHz * 1.03 && (c.src === "h" || c.conf >= o.candMinClarity))
+        .map((c) => ({ p: Math.round(hzToPitch(c.hz, o.a4) * 1000) / 1000, c: Math.round(c.conf * 100) / 100, s: c.src }));
+      if (!hz || conf < o.minClarity || hz < o.minHz * 0.97 || hz > o.maxHz * 1.03) out = { t, ...NONE, conf, db, cands: cp };
       else {
         const pitch = this.smooth.push(hzToPitch(hz, o.a4));
         const midi = Math.round(pitch);
-        out = { t, hz: pitchToHz(pitch, o.a4), name: noteName(midi), midi, cents: Math.round((pitch - midi) * 1000) / 10, pitch, conf, db };
+        out = { t, hz: pitchToHz(pitch, o.a4), name: noteName(midi), midi, cents: Math.round((pitch - midi) * 1000) / 10, pitch, conf, db, cands: cp };
         this.silentSince = null;
       }
     }

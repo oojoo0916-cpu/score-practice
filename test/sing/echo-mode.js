@@ -8,7 +8,7 @@ import { playRange, MIX, tone, sleep } from "./take.js";
 // ctl: { player, sound, eng(음 찾기), S(설정), me(노래 줄 id), line(성부), range, first(첫 음 midi), job: { cancelled }, status(글) }
 export async function listen(ctl, withAcc) {
   const { range, status } = ctl;
-  status("듣기 — 멜로디를 잘 들어 보세요", "listen");
+  status("🎧 멜로디를 들어 보세요", "listen");
   const r = await playRange(ctl, ctl.job, { from: range.from, to: range.to, tail: 0.15, mix: MIX.listen(ctl.player, ctl.me, ctl.line, withAcc) });
   return !r.cancelled;
 }
@@ -25,7 +25,7 @@ export async function sing(ctl) {
   const r = await playRange(ctl, job, {
     from: range.from, to: range.to, tail: S.echoTailSec, mix: MIX.silent(),
     onStart: (t) => { T = t; },
-    onTick: (t, TT) => status(t < TT(range.from) ? "준비… 박자를 세요" : "● 부르는 중 — 따라 부르세요", t < TT(range.from) ? "count" : "sing"),
+    onTick: (t, TT) => status(t < TT(range.from) ? "준비… 박자를 세요" : "● 따라 부르세요", t < TT(range.from) ? "count" : "sing"),
   });
   const rec = eng.stopRecord();
   if (r.cancelled) return null;

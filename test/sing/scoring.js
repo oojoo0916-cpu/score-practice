@@ -208,9 +208,78 @@ export function timeNote(res, target, frames, lo, hi, opt = SING) {
   return res;
 }
 
+// ---- 스피커로 반주를 틀 때 (8단계)
+// accAt(t): 반주가 울리는 소리 시계 t 에 울리고 있는 반주 음들(midi) → 그 순간의 소리 후보 가운데
+//   ① 반주 음(또는 그 2·3·4배, 반 옥타브 아래)과 같은 것은 빼고 ② 목표 음 ±searchSemis 안의 것만 남겨 ③ 가장 또렷한 것을 목소리로 고른다.
+//   남는 것이 없으면 "음 없음". 그다음 ④ 짧게 쳤다가 사그라드는 소리(피아노)는 뺀다 — 목소리는 길게 유지된다.
+// frames 의 시각은 마이크로 들어온 시각이라, 반주와 견줄 때는 기기 지연을 뺀다
+export function speakerFilter(frames, targets, opt = SING) {
+  if (!opt.accAt) return frames;
+  const lat = latencyOf(opt);
+  const ks = [0.5, 1, 2, 3, 4].map((k) => 12 * Math.log2(k));
+  const isAcc = (p, accs) => accs.some((a) => ks.some((d) => Math.abs(p - (a + d)) * 100 <= opt.accMatchCents));
+  let reg = 0;                                                     // 이 사람이 부르는 옥타브 (목표보다 몇 옥타브 위·아래): 반주가 없는 순간들에서 가장 많이 나온 값
+  if (opt.octaveFree) {
+    const votes = new Map();
+    let k = 0;
+    for (const f of frames) {
+      if (!voicedF(f) || opt.accAt(f.t - lat).length) continue;
+      while (k < targets.length && targets[k].t1 <= f.t - lat) k++;
+      const g = targets[k];
+      if (!g || g.t0 > f.t - lat) continue;
+      const o = Math.round((f.pitch - g.midi) / 12);
+      votes.set(o, (votes.get(o) || 0) + 1);
+    }
+    for (const [o, n] of votes) if (n > (votes.get(reg) || 0)) reg = o;
+  }
+  const dist = (p, m) => Math.abs(p - (m + 12 * reg));
+  let gi = 0;
+  const out = frames.map((f) => {
+    const ts = f.t - lat, accs = opt.accAt(ts);
+    if (!accs.length) return f;
+    while (gi < targets.length && targets[gi].t1 + 0.1 <= ts) gi++;
+    const g = targets[gi] && targets[gi].t0 - 0.3 <= ts ? targets[gi] : null;
+    // 후보: 배음 합의 봉우리(s "h")를 믿는다 — 섞인 소리에서 YIN 하나만의 답은 두 음의 "가운데"일 수 있다.
+    // 같은 자리에 YIN 후보도 있으면 그 값이 더 정밀하니 그것을 쓴다. 배음 합 후보가 없는 기록(예전 것·시험용)은 있는 후보를 그대로
+    const all = f.cands && f.cands.length ? f.cands : voicedF(f) ? [{ p: f.pitch, c: f.conf }] : [];
+    const hs = all.filter((c) => c.s === "h"), ys = all.filter((c) => c.s !== "h");
+    const cands = hs.length ? hs.map((c) => { const y = ys.find((d) => Math.abs(d.p - c.p) < 0.5); return y ? { p: y.p, c: Math.max(y.c, c.c) } : c; }) : all;
+    let ok = cands.filter((c) => !isAcc(c.p, accs));
+    if (g) ok = ok.filter((c) => (g.alts || [g.midi]).some((m) => dist(c.p, m) <= opt.searchSemis));
+    if (!ok.length) return { ...f, pitch: null, hz: 0, filtered: true };
+    const best = ok.reduce((a, b) => (b.c > a.c ? b : a));
+    return best.p === f.pitch ? f : { ...f, pitch: best.p, picked: true };
+  });
+  // 짧게 쳤다가 사그라드는 소리 빼기: 같은 높이로 이어지는 덩어리가 sustainMinMs 보다 짧고 소리가 decayDb 이상 줄면
+  for (let i = 0; i < out.length;) {
+    if (!voicedF(out[i])) { i++; continue; }
+    let j = i;
+    while (j + 1 < out.length && voicedF(out[j + 1]) && Math.abs(out[j + 1].pitch - out[j].pitch) < 0.5 && out[j + 1].t - out[j].t < 0.05) j++;
+    const dur = (out[j].t - out[i].t) * 1000 + opt.hopMs;
+    if (dur < opt.sustainMinMs && out[i].db !== undefined && out[i].db - out[j].db >= opt.decayDb) {
+      for (let k = i; k <= j; k++) out[k] = { ...out[k], pitch: null, hz: 0, filtered: true };
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+// 목표 음과 같은 음(옥타브는 상관없이)을 반주가 음 길이의 ambShare 넘게 치는가 — 그 음은 마이크가 반주를 들은 것인지 알 수 없다 → "애매"
+export function ambiguousNote(target, opt = SING) {
+  if (!opt.accAt) return false;
+  const n = 8, alts = target.alts || [target.midi];
+  let hit = 0;
+  for (let i = 0; i < n; i++) {
+    const t = target.t0 + (target.t1 - target.t0) * (i + 0.5) / n;
+    if (opt.accAt(t).some((a) => alts.some((m) => { let d = a - m; d -= 12 * Math.round(d / 12); return Math.abs(d) * 100 <= opt.accMatchCents; }))) hit++;
+  }
+  return hit / n > opt.ambShare;
+}
+
 // 목표 음 여러 개 → 음표별 결과 + 요약 { total, ok, wrong, missed, high, low, accuracy: 정확 % (0~100, 인식 안 됨도 분모에 넣는다), lagMs, voicedShare }
 export function scoreAll(targets, frames, opt = SING) {
-  const sorted = frames.slice().sort((a, b) => a.t - b.t);
+  const raw = frames.slice().sort((a, b) => a.t - b.t);
+  const sorted = opt.speaker && opt.accAt ? speakerFilter(raw, targets, opt) : raw;
   const lag = opt.autoLag ? estimateLag(targets, sorted, opt) : 0;
   const fr = lag ? sorted.map((f) => ({ ...f, t: f.t - lag })) : sorted;
   const notes = targets.map((t) => scoreNote(t, fr, opt));
@@ -222,15 +291,19 @@ export function scoreAll(targets, frames, opt = SING) {
     const lo = Math.max(t.t0 - W, prev ? (prev.t0 + t.t0) / 2 : -Infinity), hi = Math.min(t.t0 + W, next ? (t.t0 + next.t0) / 2 : Infinity);
     timeNote(notes[i], t, shifted, lo, hi, opt);
   });
-  const count = (v) => notes.filter((n) => n.verdict === v).length;
-  const tv = (v) => notes.filter((n) => n.timing && n.timing.verdict === v).length;
-  const total = notes.length, ok = count("ok");
+  // 스피커: 반주가 같은 음을 치는 음은 "애매" — 표시만 하고 점수(정확 %)에는 넣지 않는다
+  if (opt.speaker && opt.accAt) for (let i = 0; i < notes.length; i++) if (ambiguousNote(targets[i], opt)) { notes[i].ambiguous = true; notes[i].color = "amb"; }
+  const scored = notes.filter((n) => !n.ambiguous);
+  const count = (v) => scored.filter((n) => n.verdict === v).length;
+  const tv = (v) => scored.filter((n) => n.timing && n.timing.verdict === v).length;
+  const total = scored.length, ok = count("ok");
   return {
     notes,
     summary: { total, ok, wrong: count("wrong"), missed: count("missed"), high: notes.filter((n) => n.dir === "high").length,
       low: notes.filter((n) => n.dir === "low").length, accuracy: total ? Math.round(ok / total * 100) : 0, level: opt.level, tolerance: tolerance(opt), octaveFree: !!opt.octaveFree,
       lagMs: Math.round(lag * 1000), voicedShare: inSpan(targets, fr),
       early: tv("early"), late: tv("late"), onTime: tv("ok"), timingOnly: notes.filter((n) => n.color === "timing").length,
-      latencyMs: Math.round(lat * 1000), latencyGuessed: typeof opt.latencyMs !== "number", timingTol: timingTolerance(opt) },
+      latencyMs: Math.round(lat * 1000), latencyGuessed: typeof opt.latencyMs !== "number", timingTol: timingTolerance(opt),
+      ambiguous: notes.length - scored.length, filtered: sorted.filter((f) => f.filtered).length, speaker: !!(opt.speaker && opt.accAt) },
   };
 }

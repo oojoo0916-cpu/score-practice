@@ -1464,6 +1464,12 @@ $("micTestBtn").onclick = async () => {
     libStatus("마이크 테스트 화면을 열지 못했어요" + (navigator.onLine ? ": " + err.message : ". 처음 한 번은 인터넷이 될 때 열어 주세요."), true);
   }
 };
+// 인터넷 없이도 노래 채점을 열 수 있게: 앱이 뜨고 잠시 뒤 채점 파일을 미리 받아 둔다(서비스 워커가 저장한다)
+setTimeout(() => {
+  if (!navigator.onLine) return;
+  import("./sing/panel.js").catch(() => {});
+  for (const f of ["tuner.js", "pitch-worklet.js", "sing.css"]) fetch("sing/" + f).catch(() => {});
+}, 4000);
 $("singBtn").onclick = async () => {
   if (!cur) return;
   cur.player.pause();

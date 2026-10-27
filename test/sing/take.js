@@ -43,7 +43,11 @@ export const MIX = {
     cfg.countIn = true;
   },
   // 반주와 부르기: 부를 줄만 끈다(melodyVol 이 있으면 작게). withAcc 가 아니면 반주도 끄고 메트로놈
-  accomp: (player, me, { withAcc, hasAcc, melodyVol, countIn = true }) => (cfg) => {
+  accomp: (player, me, { withAcc, hasAcc, melodyVol, countIn = true, accVol = null }) => (cfg) => {
+    if (hasAcc && withAcc && accVol !== null) {                   // 반주 크기 (설정 창에서 고른 값)
+      if (cfg.tracks.piano) cfg.tracks.piano.vol = accVol;
+      if (cfg.tracks.chord) cfg.tracks.chord.vol = accVol * 0.8;
+    }
     for (const p of player.parts) if (p.id === me) { const t = track(cfg, p.id); t.mute = !melodyVol; if (melodyVol) t.vol = melodyVol; }
     if (!hasAcc) cfg.metro = withAcc;
     else if (!withAcc) {

@@ -1,15 +1,20 @@
 // 노래 채점: 연습 화면 아래 조작판 자리에 들어가는 칸. 악보는 그대로 보인다.
-// [메아리 | 반주와 부르기] 를 고르고, 부를 구간(프레이즈·마디)을 악보 위에 칠하고, 끝나면 음표 머리마다 판정을 칠한다.
-// 흐름은 echo-mode.js(메아리)·sing-mode.js(반주와 부르기), 재생은 take.js, 구간은 ranges.js, 채점은 scoring.js, 악보 위 표시는 overlay.js.
+// 맨 위 [메아리 | 반주와 부르기] · ⚙ · ✕ → 구간(◀ 3–4마디 ▶, 가사 한 줄) → 큰 시작 단추와 짧은 안내 한 줄 → 결과(큰 숫자, 작은 단추들).
+// 자주 바꾸지 않는 것(노래 줄·성부·반주·판정·보기·박자 보정)은 ⚙ 설정 창(settings-sheet.js) 한 곳에 모은다.
+// 흐름은 echo-mode.js(메아리)·sing-mode.js(반주와 부르기), 재생은 take.js, 구간은 ranges.js, 채점은 scoring.js,
+// 악보 위 표시는 overlay.js, 음표 그래프는 note-popup.js, 노래방식 화면은 karaoke.js.
 import { PitchEngine, MicError } from "./pitch-engine.js";
-import { targetsFrom, scoreAll } from "./scoring.js";
+import { targetsFrom, scoreAll, tolerance, latencyOf, speakerFilter } from "./scoring.js";
 import { current, loadUser, saveUser } from "./settings.js";
 import { loadCss } from "./tuner.js";
 import { Overlay } from "./overlay.js";
 import { RangeNav } from "./ranges.js";
-import { playRecording, sleep, tone } from "./take.js";
+import { playRecording, sleep, tone, playRange, MIX } from "./take.js";
 import { openNotePopup, closeNotePopup } from "./note-popup.js";
 import { openCalibrate } from "./calibrate.js";
+import { Karaoke } from "./karaoke.js";
+import { openGuide } from "./guide.js";
+import * as SS from "./settings-sheet.js";
 import * as Echo from "./echo-mode.js";
 import * as Sing from "./sing-mode.js";
 import { noteName } from "../edits.js";
@@ -23,115 +28,128 @@ const MODES = { echo: "메아리", sing: "반주와 부르기" };
 export async function openPanel(app) {
   await loadCss();
   const S = { ...current() };
+  const U = loadUser();
   const { sound, player } = app;
   const song = player.song, cfg = player.cfg, K = player.starts.length;
   const ov = new Overlay({ pages: app.pages, boxes: app.boxes, song, root: app.practice, opt: S });
-  let job = null, closed = false, last = null, wake = null, stopPlayback = null, autoTimer = 0;
+  let job = null, closed = false, last = null, wake = null, stopPlayback = null, autoTimer = 0, closeSheet = null, kara = null, live = null, idleTimer = 0;
 
   const panel = h("section", "sing-panel");
   panel.setAttribute("aria-label", "노래 연습");
-  const close = h("button", "icon sing-close", "✕");
-  close.setAttribute("aria-label", "노래 연습 닫기");
+  const icon = (text, label) => { const b = h("button", "sp-icon", text); b.setAttribute("aria-label", label); return b; };
+  const close = icon("✕", "노래 연습 닫기");
   if (!player.parts.length) {
-    panel.append(h("p", "sing-msg err", "이 악보에는 노래 줄이 없어서 부를 수 없어요."), close);
+    panel.append(h("p", "sp-status err", "이 악보에는 노래 줄이 없어서 부를 수 없어요."), close);
     app.practice.insertBefore(panel, app.dock);
     close.onclick = () => panel.remove();
     return;
   }
-  const sel = (parent, items, val, label) => {
-    const l = h("label", "sing-sel"), s = h("select");
-    for (const [v, t] of items) { const o = h("option", null, t); o.value = v; s.append(o); }
-    s.value = val;
-    l.append(s);
-    s.setAttribute("aria-label", label);
-    parent.append(l);
-    return s;
-  };
-  const chk = (parent, label, on) => {
-    const l = h("label", "chk sing-chk"), i = h("input");
-    i.type = "checkbox"; i.checked = on;
-    l.append(i, h("span", null, label));
-    parent.append(l);
-    return i;
-  };
-  const button = (parent, text, label) => { const b = h("button", "btn sm", text); if (label) b.setAttribute("aria-label", label); parent.append(b); return b; };
 
-  // 0줄: [메아리] [반주와 부르기] ………… [✕]
-  const row0 = h("div", "sing-tabs");
-  const tabs = {};
-  for (const [k, t] of Object.entries(MODES)) { tabs[k] = button(row0, t); tabs[k].classList.add("toggle"); }
-  row0.append(h("span", "sing-grow"), close);
-  // 1줄: [◀] 3 ~ 4마디 · 가사 [▶] [단위]
-  const row1 = h("div", "sing-range");
-  const prev = button(row1, "◀", "앞 구간");
-  const rangeText = h("b", "sing-rangetext");
-  row1.append(rangeText);
-  const next = button(row1, "▶", "다음 구간");
-  const unitBox = h("span");
-  row1.append(unitBox);
-  // 2줄: 모드별 선택 · 노래 줄 · 성부 · 판정
-  const row2 = h("div", "sing-opts");
-  const echoOpts = h("span", "sing-optgroup"), singOpts = h("span", "sing-optgroup");
-  const listenAcc = chk(echoOpts, "듣기 때 반주도", !!S.echoListenAcc);
-  const autoNext = chk(echoOpts, `${S.echoAutoNextPct}% 넘으면 다음`, !!S.echoAutoNext);
+  // ---- 설정 (기기에 기억한 값 → 없으면 settings.js 의 처음 값)
   const hasAcc = player.hasPiano || song.measures.some((m) => m.chords.length);
-  const accOn = chk(singOpts, hasAcc ? "반주" : "메트로놈", true);
-  const melOn = chk(singOpts, "멜로디 작게", false);
-  row2.append(echoOpts, singOpts);
-  const partSel = sel(row2, player.parts.map((p, i) => [String(i), p.name]), "0", "부를 노래 줄");
-  const lineSel = sel(row2, [], "all", "부를 성부");
-  const more = h("details", "sing-more");
-  more.append(h("summary", null, "판정"));
-  const moreBox = h("div", "sing-opts");
-  more.append(moreBox);
-  const levelSel = sel(moreBox, Object.entries(S.levels).map(([k, v]) => [k, `${v.name} ±${v.cents}센트`]), S.level, "판정 난이도");
-  const oct = chk(moreBox, "옥타브 무시", !!S.octaveFree);
-  const cb = chk(moreBox, "색맹 모드(○ × △)", !!S.colorblind);
-  const hide = chk(moreBox, "채점 표시 끄기", !!S.hideMarks);
-  const calBtn = button(moreBox, "");                              // 박자 보정 (6단계)
-  const calText = () => { calBtn.textContent = typeof S.latencyMs === "number" ? `⏱ 박자 보정 (지금 ${(S.latencyMs / 1000).toFixed(2)}초)` : "⏱ 박자 보정 (아직 안 함)"; };
-  calText();
-  row2.append(more);
-  // 3줄: [▶ 듣고 부르기] 안내
-  const row3 = h("div", "sing-go");
-  const go = h("button", "btn primary sing-start", "▶ 시작");
-  const msg = h("p", "sing-msg");
-  const calNow = h("button", "btn sm", "⏱ 박자 보정");            // 보정하지 않았으면 눈에 띄게 한 번 권한다
-  calNow.hidden = typeof S.latencyMs === "number";
-  row3.append(go, msg, calNow);
-  // 4줄: 결과 요약 + [멜로디 듣기] [내 녹음 듣기] [표 보기]
-  const row4 = h("div", "sing-result");
-  const sum = h("p", "sing-sum");
-  row4.append(sum);
-  const tools = h("div", "sing-tools");
-  const melBtn = button(tools, "🎹 멜로디 듣기");
-  const myBtn = button(tools, "🎤 내 녹음 듣기");
-  const tableBtn = button(tools, "표 보기");
-  row4.append(tools);
-  const table = h("div", "sing-table");
-  table.hidden = true;
-  panel.append(row0, row1, row2, row3, row4, table);
-  app.practice.insertBefore(panel, app.dock);
-  app.practice.classList.add("sing-on");
+  const pref = {
+    part: 0, line: "all",
+    listenAcc: U.listenAcc ?? S.echoListenAcc, autoNext: U.autoNext ?? S.echoAutoNext,
+    acc: U.acc ?? true, accVol: U.accVol ?? S.accVol, melody: U.melody ?? false,
+    level: S.level, octaveFree: !!S.octaveFree, colorblind: !!S.colorblind, hideMarks: !!S.hideMarks,
+    output: U.output || S.output, mic: { ...S.mic, ...(U.mic || {}) },
+  };
+  S.mic = pref.mic;                                                // 마이크를 켤 때 쓴다 (에코 제거 등 — 설정 창에서 바꾼다)
+  S.output = pref.output;                                          // 음 찾기가 스피커일 때만 배음 합 후보를 계산한다
+  const soloI = player.parts.findIndex((p) => cfg.tracks[p.id] && cfg.tracks[p.id].solo);
+  if (soloI > 0) pref.part = soloI;
+  const wantLine = (i) => (cfg.tracks[player.parts[i].id] || {}).line || "all";
+  const lineOk = (i, v) => v === "all" || !!player.vl[i].has[v];
+  pref.line = lineOk(pref.part, wantLine(pref.part)) ? wantLine(pref.part) : "all";
+  const keep = (o) => { Object.assign(pref, o); SS.remember(o); };
 
-  // ---- 상태
-  let mode = loadUser().mode === "sing" ? "sing" : "echo";
-  let nav = null;
-  const unitSel = { echo: null, sing: null };
-  const unitItems = (m) => {
-    if (m === "sing") return [["start", "처음부터"], ["here", "지금 마디부터"]];          // 반주와 부르기는 곡 끝까지 (2026-10-27 사용자 의견)
-    const list = S.echoUnits.map((u) => [String(u), u === "phrase" ? "프레이즈" : u + "마디"]);
-    if (cfg.loop) list.push(["loop", "구간 반복"]);
-    return list;
+  // ---- 1줄: [메아리 | 반주와 부르기] ⚙ ✕
+  const top = h("div", "sp-top");
+  const seg = h("div", "sp-seg");
+  seg.setAttribute("role", "tablist");
+  const tabs = {};
+  for (const [k, t] of Object.entries(MODES)) { const b = h("button", "sp-seg-btn", t); b.setAttribute("role", "tab"); tabs[k] = b; seg.append(b); }
+  const gear = icon("⚙", "노래 채점 설정");
+  top.append(seg, gear, close);
+  // ---- 2줄: ◀ 구간 / 가사 ▶
+  const rangeRow = h("div", "sp-range");
+  const prev = icon("‹", "앞 구간"), next = icon("›", "다음 구간");
+  const rbox = h("div", "sp-rangebox");
+  const rangeText = h("b", "sp-rangetext"), lyric = h("span", "sp-lyric");
+  rbox.append(rangeText, lyric);
+  rangeRow.append(prev, rbox, next);
+  // ---- 3줄: 작은 칩들 — 구간 단위 / 노래방 화면 / 박자 보정 권유
+  const chips = h("div", "sp-chips");
+  const unitSel = {};
+  const unitItems = {
+    echo: [...S.echoUnits.map((u) => [String(u), u === "phrase" ? "프레이즈" : u + "마디씩"]), ...(cfg.loop ? [["loop", "구간 반복"]] : [])],
+    sing: [["start", "처음부터"], ["here", "지금 마디부터"]],
   };
   for (const m of Object.keys(MODES)) {
-    unitSel[m] = sel(unitBox, unitItems(m), m === "sing" ? "start" : cfg.loop ? "loop" : String(S.echoUnit), m === "sing" ? "어디서부터 부를지" : "구간 단위");
-    unitSel[m].onchange = () => pick(m === "sing" ? player.kAt(player.pos) : nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
+    const s = h("select", "sp-chip");
+    for (const [v, t] of unitItems[m]) { const o = h("option", null, t + " ▾"); o.value = v; s.append(o); }
+    s.value = m === "sing" ? "start" : cfg.loop ? "loop" : String(S.echoUnit);
+    s.setAttribute("aria-label", m === "sing" ? "어디서부터 부를지" : "구간 단위");
+    unitSel[m] = s;
+    chips.append(s);
   }
+  const karaBtn = h("button", "sp-chip", "🎤 노래방 화면");
+  const calChip = h("button", "sp-chip warn", "⏱ 박자 보정 안 함");
+  chips.append(karaBtn, calChip);
+  // ---- 4줄: 큰 시작 단추 + 짧은 안내 한 줄
+  const go = h("button", "sp-go", "▶ 듣고 부르기");
+  const msg = h("p", "sp-status");
+  // ---- 5줄: 결과 (큰 숫자 + 집계) + 작은 단추들
+  const result = h("div", "sp-result");
+  const pct = h("b", "sp-pct"), counts = h("span", "sp-counts"), sub = h("span", "sp-sub");
+  const nums = h("div", "sp-nums");
+  nums.append(counts, sub);
+  result.append(pct, nums);
+  const tools = h("div", "sp-tools");
+  const tool = (t) => { const b = h("button", "sp-tool", t); tools.append(b); return b; };
+  const melBtn = tool("🎹 멜로디"), myBtn = tool("🎤 내 녹음"), worstBtn = tool("🔁 틀린 곳 메아리로"), tableBtn = tool("📋 표");
+  const table = h("div", "sing-table sp-table");
+  panel.append(top, rangeRow, chips, go, msg, result, tools, table);
+  app.practice.insertBefore(panel, app.dock);
+  app.practice.classList.add("sing-on");
+  // 노래방 화면 자리 (악보 대신)
+  const karaBox = h("div", "sing-karaoke");
+  app.practice.insertBefore(karaBox, panel);
+
+  // ---- 상태
+  let mode = U.mode === "sing" ? "sing" : "echo";
+  let nav = null;
   const measureN = (k) => song.measures[song.order[Math.min(K - 1, Math.max(0, k))]].n;
-  const notes = () => { const i = +partSel.value, line = lineSel.value; return line === "all" ? player.vl[i].all : player.vl[i].lines[line] || []; };
+  const notes = () => (pref.line === "all" ? player.vl[pref.part].all : player.vl[pref.part].lines[pref.line] || []);
+  const partId = () => player.parts[pref.part].id;
+  const opt = () => ({ ...S, level: pref.level, octaveFree: pref.octaveFree, speaker: pref.output === "speaker" });
+  // 반주로 울리는 음들 (스피커일 때 목소리와 가르는 데 쓴다): T(박) 로 시각을 얻은 뒤 만든다. 들리는 줄만 — 반주(피아노·코드), 다른 노래 줄, "멜로디도 작게"면 내 줄
+  function accAtFor(T) {
+    const me = partId(), muted = (id) => !!(cfg.tracks[id] && cfg.tracks[id].mute);
+    const audible = (tr) => (tr === me ? pref.melody : tr === "piano" || tr === "chord" ? hasAcc && pref.acc && !muted(tr) : tr !== "metro" && !muted(tr));
+    const tp = cfg.transpose || 0, bins = new Map();
+    for (const e of player.events) {
+      if (e.click || !audible(e.tr)) continue;
+      const it = [T(e.b), T(e.b + e.d) + S.accRingSec, e.midi + tp];
+      for (let b = Math.floor(it[0] * 2); b <= Math.floor(it[1] * 2); b++) { if (!bins.has(b)) bins.set(b, []); bins.get(b).push(it); }
+    }
+    return (t) => (bins.get(Math.floor(t * 2)) || []).filter((it) => it[0] <= t && t < it[1]).map((it) => it[2]);
+  }
   function setMsg(t, err = false) { msg.textContent = t; msg.classList.toggle("err", err); }
-  function clearResult() { closeNotePopup(); sum.textContent = ""; table.textContent = ""; table.hidden = true; tools.hidden = true; ov.clearMarks(); last = null; }
+  function clearResult() {
+    closeNotePopup();
+    result.hidden = tools.hidden = table.hidden = true;
+    table.textContent = "";
+    ov.clearMarks();
+    last = null;
+  }
+  const calOk = () => typeof S.latencyMs === "number";
+  const refreshChips = () => {
+    for (const [k, s] of Object.entries(unitSel)) s.hidden = k !== mode;
+    karaBtn.hidden = mode !== "sing";
+    karaBtn.classList.toggle("on", !!kara);
+    calChip.hidden = calOk();
+  };
 
   function pick(k, dir = 0) {
     if (mode === "sing") {                                         // 반주와 부르기: 고른 곳(처음 또는 지금 마디)부터 곡 끝까지
@@ -139,77 +157,130 @@ export async function openPanel(app) {
       const r = { k0, k1: K, from: player.starts[k0], to: player.totalBeats, noteFrom: player.starts[k0], noteTo: player.totalBeats, whole: true };
       nav = { cur: notes().some((n) => n.start >= r.noteFrom - 1e-6) ? r : null, skipped: false, hasPrev: () => false, hasNext: () => false };
       clearResult();
-      showRange("");
+      showRange();
       return;
     }
     nav = new RangeNav({ notes: notes(), starts: player.starts, total: player.totalBeats, loop: cfg.loop, opt: S });
-    nav.unit = unitSel[mode].value === "phrase" || unitSel[mode].value === "loop" ? unitSel[mode].value : +unitSel[mode].value;
+    nav.unit = unitSel.echo.value === "phrase" || unitSel.echo.value === "loop" ? unitSel.echo.value : +unitSel.echo.value;
     const r = dir > 0 ? (nav.at(k), nav.next()) || nav.cur : dir < 0 ? (nav.at(k), nav.prev()) || nav.cur : nav.at(k);
     nav.cur = r;
     clearResult();
-    showRange(nav.skipped ? "노래가 없는 곳(전주·간주)은 건너뛰고 노래가 나오는 곳부터 해요." : "");
+    showRange(nav.skipped ? "전주·간주는 건너뛰고 노래가 나오는 곳부터 해요." : "");
   }
   function lyricsOf(r) {
     const t = notes().filter((n) => n.start >= r.noteFrom - 1e-6 && n.start < r.noteTo - 1e-6).map((n) => n.lyric || "").join("").replace(/\s+/g, "");
-    return t.length > 10 ? t.slice(0, 10) + "…" : t;
+    return t.length > 16 ? t.slice(0, 16) + "…" : t;
   }
-  const READY = () => (mode === "echo"
-    ? "멜로디를 듣고 → 첫 음 → 박자 한 마디를 센 다음, 반주 없이 따라 불러요. 부르는 동안 앱 소리는 나지 않아요."
-    : (hasAcc ? "반주가 나오면 곡 끝까지 같이 부르세요. 지나간 음표는 바로바로 색칠돼요. 이어폰을 끼면 반주 소리가 마이크에 섞이지 않아 더 정확해요."
-      : "박자 소리에 맞춰 곡 끝까지 부르세요."))
-    + " 악보에서 마디를 누르면 거기서부터 해요.";
+  const READY = () => (mode === "echo" ? "멜로디를 듣고, 한 마디 센 뒤 따라 불러요"
+    : !hasAcc ? "박자 소리에 맞춰 곡 끝까지 불러요"
+      : pref.output === "speaker" ? (pref.accVol > S.speakerVolHint ? "스피커예요 · 반주를 조금 줄이면 더 정확해요 (⚙)" : "곡 끝까지 반주와 같이 불러요 · 스피커 소리는 걸러서 들어요")
+        : "곡 끝까지 반주와 같이 불러요");
   function showRange(note = "") {
     const r = nav.cur;
-    if (!r) { rangeText.textContent = "—"; prev.disabled = next.disabled = true; ov.range(0, 0); setMsg("이 곡에는 고른 노래 줄의 음이 없어요.", true); go.disabled = true; return; }
+    prev.hidden = next.hidden = mode === "sing";
+    if (!r) { rangeText.textContent = "부를 음이 없어요"; lyric.textContent = ""; prev.disabled = next.disabled = true; ov.range(0, 0); setMsg("고른 노래 줄에 음이 없어요. ⚙ 에서 다른 줄을 골라 주세요.", true); go.disabled = true; return; }
     go.disabled = false;
-    const a = measureN(r.k0), b = measureN(r.k1 - 1), ly = lyricsOf(r);
-    if (r.whole) rangeText.textContent = r.k0 === 0 ? `처음부터 끝까지 (${b}마디)` : `${a}마디부터 끝까지`;
-    else rangeText.textContent = (a === b ? `${a}마디` : `${a} ~ ${b}마디`) + (ly ? ` · ${ly}` : "");
+    const a = measureN(r.k0), b = measureN(r.k1 - 1);
+    if (r.whole) { rangeText.textContent = r.k0 === 0 ? "처음부터 끝까지" : `${a}마디부터 끝까지`; lyric.textContent = `${song.measures.length}마디 곡`; }
+    else { rangeText.textContent = a === b ? `${a}마디` : `${a}–${b}마디`; lyric.textContent = lyricsOf(r); }
     prev.disabled = !nav.hasPrev();
     next.disabled = !nav.hasNext();
     ov.range(r.k0, r.whole ? r.k0 + 1 : r.k1);                     // 곡 끝까지 부를 때는 시작 마디만 칠한다
     app.scrollTo(r.k0);
     setMsg(note || READY());
-    go.textContent = mode === "echo" ? "▶ 듣고 부르기" : "● 시작";
-  }
-  function fillLines() {
-    const i = +partSel.value, has = player.vl[i].has, want = (cfg.tracks[player.parts[i].id] || {}).line || "all";
-    lineSel.textContent = "";
-    for (const v of ["all", "top", "mid", "bottom"]) if (v === "all" || has[v]) { const o = h("option", null, LINES[v] + (v === "all" ? "" : " 성부")); o.value = v; lineSel.append(o); }
-    lineSel.value = [...lineSel.options].some((o) => o.value === want) ? want : "all";
-    lineSel.parentNode.hidden = lineSel.options.length < 2;
+    go.textContent = mode === "echo" ? "▶ 듣고 부르기" : "● 반주와 부르기";
   }
   function setMode(m) {
     mode = m;
-    saveUser({ ...loadUser(), mode: m });
-    for (const [k, b] of Object.entries(tabs)) { b.classList.toggle("on", k === m); b.setAttribute("aria-pressed", String(k === m)); }
-    echoOpts.hidden = m !== "echo";
-    singOpts.hidden = m !== "sing";
-    for (const [k, s] of Object.entries(unitSel)) s.parentNode.hidden = k !== m;
-    prev.hidden = next.hidden = m === "sing";
+    keep({ mode: m });
+    for (const [k, b] of Object.entries(tabs)) { b.classList.toggle("on", k === m); b.setAttribute("aria-selected", String(k === m)); }
+    if (m !== "sing" && kara) toggleKara();
+    refreshChips();
     pick(nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
   }
-  partSel.parentNode.hidden = player.parts.length < 2;
-  const soloI = player.parts.findIndex((p) => cfg.tracks[p.id] && cfg.tracks[p.id].solo);
-  if (soloI > 0) partSel.value = String(soloI);
-  fillLines();
   for (const [k, b] of Object.entries(tabs)) b.onclick = () => { if (!job) setMode(k); };
-  partSel.onchange = () => { fillLines(); pick(nav.cur ? nav.cur.k0 : 0); };
-  lineSel.onchange = () => pick(nav.cur ? nav.cur.k0 : 0);
+  for (const [m, s] of Object.entries(unitSel)) s.onchange = () => pick(m === "sing" ? player.kAt(player.pos) : nav && nav.cur ? nav.cur.k0 : player.kAt(player.pos));
   prev.onclick = () => { if (!job && nav.cur) pick(nav.cur.k0, -1); };
   next.onclick = () => { if (!job && nav.cur) pick(nav.cur.k0, 1); };
-  // 고른 판정·표시를 기기에 기억
-  const remember = () => saveUser({ ...loadUser(), level: levelSel.value, octaveFree: oct.checked, colorblind: cb.checked, hideMarks: hide.checked });
-  levelSel.onchange = remember;
-  oct.onchange = remember;
-  cb.onchange = hide.onchange = () => { remember(); ov.style({ colorblind: cb.checked, hidden: hide.checked }); };
-  setMode(mode);
-  const calibrate = () => { if (job) return; openCalibrate({ sound, onDone: (ms) => { S.latencyMs = ms; calText(); calNow.hidden = true; } }); };
-  calBtn.onclick = calNow.onclick = calibrate;
-  if (typeof S.latencyMs !== "number" && !loadUser().calibAsked) {
-    saveUser({ ...loadUser(), calibAsked: true });
-    setMsg("박자까지 정확히 보려면 '⏱ 박자 보정'을 한 번 해 주세요 (30초). 안 해도 바로 부를 수 있어요 — 그때는 박자를 어림으로 봐요.");
+
+  // ---- ⚙ 설정 창
+  function openSettings() {
+    if (job) return;
+    closeSheet = SS.openSheet("노래 채점 설정", (body) => {
+      const sPart = SS.section(body, "부를 줄");
+      const partSel = SS.selectRow(sPart, "노래 줄", player.parts.map((p, i) => [String(i), p.name]), String(pref.part));
+      const lineItems = (i) => ["all", "top", "mid", "bottom"].filter((v) => lineOk(i, v)).map((v) => [v, LINES[v] + (v === "all" ? "" : " 성부")]);
+      const lineSel = SS.selectRow(sPart, "성부", lineItems(pref.part), pref.line);
+      const fillLines = () => { const i = +partSel.value; lineSel.textContent = ""; for (const [v, t] of lineItems(i)) { const o = h("option", null, t); o.value = v; lineSel.append(o); } lineSel.value = lineOk(i, pref.line) ? pref.line : "all"; lineSel.closest(".ss-row").hidden = lineSel.options.length < 2; };
+      fillLines();
+      partSel.closest(".ss-row").hidden = player.parts.length < 2;
+      if (player.parts.length < 2 && lineSel.options.length < 2) sPart.hidden = true;
+      partSel.onchange = () => { fillLines(); pref.part = +partSel.value; pref.line = lineSel.value; pick(nav.cur ? nav.cur.k0 : 0); };
+      lineSel.onchange = () => { pref.line = lineSel.value; pick(nav.cur ? nav.cur.k0 : 0); };
+
+      const sEcho = SS.section(body, "메아리");
+      SS.switchRow(sEcho, "듣기 때 반주도 같이", pref.listenAcc).onchange = (e) => keep({ listenAcc: e.target.checked });
+      SS.switchRow(sEcho, `${S.echoAutoNextPct}% 넘으면 다음 구간으로`, pref.autoNext).onchange = (e) => keep({ autoNext: e.target.checked });
+
+      const sSing = SS.section(body, "반주와 부르기");
+      SS.switchRow(sSing, hasAcc ? "반주" : "메트로놈", pref.acc, hasAcc ? "끄면 메트로놈만 나와요" : "").onchange = (e) => keep({ acc: e.target.checked });
+      if (hasAcc) SS.rangeRow(sSing, "반주 크기", Math.round(pref.accVol * 100)).oninput = (e) => keep({ accVol: e.target.value / 100 });
+      SS.switchRow(sSing, "멜로디도 작게 같이", pref.melody).onchange = (e) => keep({ melody: e.target.checked });
+
+      const sJudge = SS.section(body, "판정");
+      const lv = SS.segmented(sJudge, Object.entries(S.levels).map(([k, v]) => [k, `${v.name} ±${v.cents}`]), pref.level, "판정 난이도");
+      lv.onchange = (v) => keep({ level: v });
+      SS.switchRow(sJudge, "옥타브 무시", pref.octaveFree, "한 옥타브 낮게(높게) 불러도 정확").onchange = (e) => keep({ octaveFree: e.target.checked });
+
+      const sView = SS.section(body, "보기");
+      const restyle = () => ov.style({ colorblind: pref.colorblind, hidden: pref.hideMarks });
+      SS.switchRow(sView, "색맹 모드", pref.colorblind, "파랑·분홍·청록 + ○ × △").onchange = (e) => { keep({ colorblind: e.target.checked }); restyle(); };
+      SS.switchRow(sView, "채점 표시 끄기", pref.hideMarks).onchange = (e) => { keep({ hideMarks: e.target.checked }); restyle(); };
+
+      const sOut = SS.section(body, "소리");
+      const out = SS.segmented(sOut, [["earphones", "🎧 이어폰"], ["speaker", "🔊 스피커"]], pref.output, "소리 나오는 곳");
+      out.onchange = (v) => { keep({ output: v }); S.output = v; showRange(); };
+      const micRow = (k, label) => SS.switchRow(sOut, label, pref.mic[k], "켜면 노래 음정이 흐려질 수 있어요").onchange = (e) => {
+        keep({ mic: { ...pref.mic, [k]: e.target.checked } }); S.mic = pref.mic; eng.stop();           // 다음에 마이크를 켤 때부터
+      };
+      micRow("echoCancellation", "에코 제거");
+      micRow("noiseSuppression", "잡음 줄이기");
+      micRow("autoGainControl", "자동 음량");
+      if (hasAcc) {
+        const t = h("button", "ss-btn", `🔊 반주만 틀고 시험 (${S.speakerTestSec}초)`);
+        t.onclick = () => { closeSheet(); speakerTest(); };
+        sOut.append(t, h("p", "ss-note", "가만히 있는 동안 반주 소리를 목소리로 잘못 듣는지 재요. 스피커로 쓸 때 해 보세요."));
+      }
+
+      const sTime = SS.section(body, "박자");
+      const cal = h("button", "ss-btn", calOk() ? `⏱ 박자 보정 다시 하기 (지금 ${(S.latencyMs / 1000).toFixed(2)}초)` : "⏱ 박자 보정 하기 (아직 안 함)");
+      cal.onclick = () => { closeSheet(); calibrate(); };
+      sTime.append(cal);
+      const again = h("button", "ss-btn", "처음 안내 다시 보기");
+      again.onclick = () => { closeSheet(); guide(); };
+      SS.section(body, "도움말").append(again);
+    });
   }
+  gear.onclick = openSettings;
+  const calibrate = () => { if (job) return; openCalibrate({ sound, onDone: (ms) => { S.latencyMs = ms; refreshChips(); } }); };
+  calChip.onclick = calibrate;
+
+  // ---- 노래방 화면 (반주와 부르기). 부르는 도중에도 바꿀 수 있다
+  function toggleKara() {
+    if (kara) { kara.destroy(); kara = null; app.practice.classList.remove("sing-k"); }
+    else {
+      app.practice.classList.add("sing-k");
+      kara = new Karaoke({ root: karaBox, S, now: () => (sound.ctx ? sound.ctx.currentTime : 0), targets: () => (live && live.targets) || null,
+        frames: () => {                                            // 스피커면 노래방 선도 반주 소리를 거른 것으로
+          const f = eng.liveFrames(), o2 = live && live.o;
+          return o2 && o2.speaker && o2.accAt ? speakerFilter(f.slice(-S.karaFilterFrames), live.targets || [], o2) : f;
+        }, latency: latencyOf(S), tol: tolerance(opt()), octaveFree: pref.octaveFree });
+      kara.start();
+    }
+    refreshChips();
+    if (!kara && nav && nav.cur) app.scrollTo(player.kAt(player.now()));
+  }
+  karaBtn.onclick = toggleKara;
 
   // 악보에서 마디를 누르면(앱이 재생 위치를 옮긴 뒤) 거기서부터. 하는 중에는 악보를 눌러도 아무 일도 없게 막는다
   const onScoreTap = (e) => {
@@ -222,14 +293,29 @@ export async function openPanel(app) {
   const eng = new PitchEngine({ getCtx: () => sound.ensure(), settings: S });
   eng.onError = (err) => { if (job) job.cancelled = true; setMsg(err.message, true); };
 
+  setMode(mode);
+  // 처음 쓰는 사람: 3장짜리 안내 (마이크 허용 → 이어폰/스피커 → 박자 보정)
+  async function guide() {
+    const r = await openGuide(pref.output);
+    keep({ guideSeen: true, calibAsked: true });
+    if (closed) return;
+    if (r.output) { keep({ output: r.output }); S.output = r.output; showRange(); }
+    if (r.calibrate) calibrate();
+  }
+  if (!U.guideSeen) guide();
+  else if (!calOk() && !U.calibAsked) { SS.remember({ calibAsked: true }); setMsg("박자까지 보려면 '⏱ 박자 보정'을 한 번 해 주세요 (30초). 안 해도 부를 수 있어요."); }
+
   // ---- 하기
-  const busyEls = () => [prev, next, partSel, lineSel, accOn, melOn, listenAcc, unitSel.echo, unitSel.sing, ...Object.values(tabs), melBtn, myBtn];
+  const busyEls = () => [prev, next, unitSel.echo, unitSel.sing, ...Object.values(tabs), gear, melBtn, myBtn, worstBtn, calChip];
   function begin() {
     clearTimeout(autoTimer);
+    clearTimeout(idleTimer);
     if (stopPlayback) { stopPlayback(); stopPlayback = null; }
+    if (closeSheet) { closeSheet(); closeSheet = null; }
     job = { cancelled: false };
     for (const el of busyEls()) el.disabled = true;
     go.textContent = "■ 그만";
+    go.classList.add("stop");
     const ns = song.parts.flatMap((p) => p.notes.map((n) => n.midi + cfg.transpose));
     sound.ensure();
     sound.load(Math.min(36, ...ns), Math.max(72, ...ns));
@@ -240,21 +326,27 @@ export async function openPanel(app) {
   function end() {
     job = null;
     if (closed) return;
+    // 한동안 안 부르면 마이크를 끈다 (배터리, 주소창의 마이크 표시). 다시 누르면 저절로 다시 켠다
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (!job && eng.running) eng.stop(); }, S.micIdleOffSec * 1000);
     for (const el of busyEls()) el.disabled = false;
+    go.classList.remove("stop");
     if (wake) { wake.release().catch(() => {}); wake = null; }
     if (nav.cur) player.pos = nav.cur.from;
     app.refresh();
     app.save();                                                    // 되돌린 재생 설정을 저장
-    showRange(msg.classList.contains("err") ? msg.textContent : "");
-    if (last) setMsg(last.note, last.err);
-    if (last) go.textContent = mode === "echo" ? "● 다시 부르기" : "● 다시 부르기";
+    const err = msg.classList.contains("err") ? msg.textContent : "";
+    const keepLast = last;
+    showRange(err);
+    last = keepLast;
+    if (last) { setMsg(last.note, last.err); go.textContent = "● 다시 부르기"; }
     prev.disabled = !nav.hasPrev(); next.disabled = !nav.hasNext();
   }
   const ctlFor = (j) => {
     const r = nav.cur, list = notes();
     const first = list.find((n) => n.start >= r.noteFrom - 1e-6 && n.start < r.noteTo - 1e-6);
-    return { player, sound, eng, S, me: player.parts[+partSel.value].id, line: lineSel.value, range: r, list, job: j,
-      first: first ? first.midi + (cfg.transpose || 0) : 60, withAcc: accOn.checked, hasAcc, melody: melOn.checked,
+    return { player, sound, eng, S, me: partId(), line: pref.line, range: r, list, job: j,
+      first: first ? first.midi + (cfg.transpose || 0) : 60, withAcc: pref.acc, hasAcc, melody: pref.melody, accVol: pref.accVol,
       // 카운트인: 첫 음이 시작 마디 안에 있을 때만 (전주가 있으면 전주가 박자를 알려 준다)
       countIn: !first || first.start < (r.k0 + 1 < K ? player.starts[r.k0 + 1] : player.totalBeats) - 1e-6,
       status: (t) => setMsg(t) };
@@ -272,41 +364,49 @@ export async function openPanel(app) {
     }
     go.disabled = false;
     if (closed) { eng.stop(); return; }
-    const j = begin(), ctl = ctlFor(j), opt = { ...S, level: levelSel.value, octaveFree: oct.checked };
+    const j = begin(), ctl = ctlFor(j), o = opt();
     clearResult();
+    live = null;
     try {
       let took = null;
       if (mode === "echo") {
-        if (fullEcho && !(await Echo.listen(ctl, listenAcc.checked))) return;
+        if (fullEcho && !(await Echo.listen(ctl, pref.listenAcc))) return;
         if (fullEcho) { setMsg("이제 따라 부를 차례예요"); await sleep(S.echoGapSec * 1000); }
         if (j.cancelled) return;
         took = await Echo.sing(ctl);
       } else {
-        const live = { targets: null, next: 0, notes: [], at: 0 };
+        // 부르는 동안 지나간 음을 바로바로 색칠한다 (노래방 화면도 같은 목표 음을 쓴다)
+        live = { targets: null, next: 0, notes: [], at: 0, o };
         ctl.live = (t, T) => {
+          if (!live.targets) {
+            live.targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt: o });
+            if (o.speaker) o.accAt = accAtFor(T);
+          }
           if (t - live.at < S.liveEverySec) return;
           live.at = t;
-          if (!live.targets) live.targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt });
           let k = live.next;
           while (k < live.targets.length && live.targets[k].t1 + S.liveWaitSec < t) k++;
           if (k === live.next) return;
           const batch = live.targets.slice(live.next, k), from = batch[0].t0 - S.liveContextSec;
-          const res = scoreAll(batch, eng.liveFrames().filter((f) => f.t >= from), opt);
-          live.notes.push(...res.notes);
+          live.notes.push(...scoreAll(batch, eng.liveFrames().filter((f) => f.t >= from), o).notes);
           live.next = k;
-          ov.results(live.notes, { partId: player.parts[+partSel.value].id, transpose: cfg.transpose || 0 });
+          ov.results(live.notes, { partId: partId(), transpose: cfg.transpose || 0 });
           const ok = live.notes.filter((n) => n.verdict === "ok").length;
-          sum.textContent = `지금까지 정확 ${Math.round(ok / live.notes.length * 100)}% (${live.notes.length}음)`;
+          result.hidden = false;
+          pct.textContent = Math.round(ok / live.notes.length * 100) + "%";
+          counts.textContent = `지금까지 ${live.notes.length}음`;
+          sub.textContent = "";
         };
         took = await Sing.sing(ctl);
       }
       if (!took) return;
-      let targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: took.T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt });
+      let targets = targetsFrom(ctl.list, player.tl, ctl.range.noteFrom, ctl.range.noteTo, { base: took.T(ctl.range.noteFrom), transpose: cfg.transpose || 0, opt: o });
+      if (o.speaker && mode === "sing") o.accAt = accAtFor(took.T);           // 메아리는 부르는 동안 앱 소리가 없어서 거를 것이 없다
       if (took.cancelled) {                                        // 중간에 그만: 그때까지 부른 음만 채점한다
         targets = targets.filter((g) => g.t1 <= took.stopAt + 0.05);
         if (!targets.length) return;
       }
-      show({ ...scoreAll(targets, took.rec ? took.rec.frames : [], opt), opt }, took.rec, ctl.range, took.cancelled);
+      show({ ...scoreAll(targets, took.rec ? took.rec.frames : [], o), opt: o }, took.rec, ctl.range, took.cancelled);
     } catch (err) {
       console.error(err);
       setMsg("하다가 멈췄어요: " + (err && err.message), true);
@@ -314,11 +414,36 @@ export async function openPanel(app) {
       const cancelled = j.cancelled;
       end();
       if (cancelled && !last) setMsg("멈췄어요.");
-      else if (last && mode === "echo" && autoNext.checked && last.res.summary.accuracy >= S.echoAutoNextPct && nav.hasNext()) {
-        setMsg(last.note + ` — 정확 ${last.res.summary.accuracy}%! 잠시 뒤 다음 구간으로 가요.`);
+      else if (last && mode === "echo" && pref.autoNext && last.res.summary.accuracy >= S.echoAutoNextPct && nav.hasNext()) {
+        setMsg(`정확 ${last.res.summary.accuracy}%! 잠시 뒤 다음 구간으로 가요.`);
         autoTimer = setTimeout(() => { if (closed || job) return; pick(nav.cur.k0, 1); run(true); }, S.echoAutoNextDelaySec * 1000);
       }
     }
+  }
+
+  // 스피커 시험: 반주만 틀고 가만히 있는 동안 목소리로 잡힌 비율 — 거르기 전 / 거른 뒤 (8단계)
+  async function speakerTest() {
+    if (job) return;
+    try { await eng.start(); } catch (err) { setMsg(err instanceof MicError ? err.message : "마이크를 켜지 못했어요", true); return; }
+    const k = player.kAt(player.pos), from = player.starts[k];
+    const to = Math.min(player.totalBeats, player.tl.beatOf(player.tl.secOf(from) + S.speakerTestSec));
+    const j = begin(), wasOut = S.output;
+    S.output = "speaker";                                          // 시험하는 동안은 스피커처럼 후보를 모두 구한다
+    clearResult();
+    let T = null, rec = null;
+    try {
+      setMsg(`🔊 반주만 나와요 — ${S.speakerTestSec}초 동안 가만히 있어 주세요`);
+      eng.startRecord();
+      await playRange({ player, sound }, j, { from, to, mix: MIX.accomp(player, partId(), { withAcc: true, hasAcc, melodyVol: 0, countIn: false, accVol: pref.accVol }), onStart: (t) => { T = t; } });
+      rec = eng.stopRecord();
+    } finally { S.output = wasOut; end(); }
+    if (!rec || !T || j.cancelled) { setMsg("시험을 멈췄어요."); return; }
+    const fr = rec.frames.filter((f) => f.db !== undefined);
+    const targets = targetsFrom(notes(), player.tl, from, to, { base: T(from), transpose: cfg.transpose || 0, opt: S });
+    const after = speakerFilter(fr, targets, { ...opt(), speaker: true, accAt: accAtFor(T) });
+    const share = (a) => (a.length ? Math.round(a.filter((f) => f.pitch !== null && f.pitch !== undefined).length / a.length * 100) : 0);
+    const a = share(fr), b = share(after);
+    setMsg(`가만히 있는데 목소리로 잡힌 소리: 거르기 전 ${a}% → 거른 뒤 ${b}%` + (b > S.speakerTestOkPct ? " · 반주를 줄이거나 이어폰을 써 주세요" : " · 스피커로 써도 괜찮아요"), b > S.speakerTestOkPct);
   }
 
   // 음표 점을 누르면 그 음의 그래프 (5단계). 내 소리: 녹음에서 그 음 자리만 (늦게 들어온 만큼 맞춰서)
@@ -345,48 +470,64 @@ export async function openPanel(app) {
   };
   function show(res, rec, range, partial = false) {
     const s = res.summary;
-    sum.textContent = (partial ? "멈춘 곳까지 " : "") + `정확 ${s.accuracy}% — 정확 ${s.ok} · 틀림 ${s.wrong} · 인식 안 됨 ${s.missed} (음표 ${s.total}개)`
-      + ` · 박자: 빠른 음 ${s.early} · 늦은 음 ${s.late}` + (s.latencyGuessed ? " (보정 전 어림)" : "");
-    ov.results(res.notes, { partId: player.parts[+partSel.value].id, transpose: cfg.transpose || 0, onTap: tapNote });
+    result.hidden = tools.hidden = false;
+    pct.textContent = s.accuracy + "%";
+    counts.textContent = (partial ? "멈춘 곳까지 · " : "") + `정확 ${s.ok} · 틀림 ${s.wrong}` + (s.missed ? ` · 인식 안 됨 ${s.missed}` : "") + (s.ambiguous ? ` · 애매 ${s.ambiguous}` : "");
+    sub.textContent = `빠른 음 ${s.early} · 늦은 음 ${s.late}` + (s.latencyGuessed ? " (박자 어림)" : "");
+    ov.results(res.notes, { partId: partId(), transpose: cfg.transpose || 0, onTap: tapNote });
     app.scrollTo(range.k0);
-    const lagTxt = s.lagMs ? ` · 늦게 들어온 소리 ${(s.lagMs / 1000).toFixed(2)}초를 맞춰서 판정` : "";
-    const heard = `마이크가 목소리를 들은 시간 ${Math.round(s.voicedShare * 100)}%` + lagTxt;
     const err = s.voicedShare < 0.3;
-    const note = err ? `목소리가 거의 잡히지 않았어요 (${heard}). 폰을 입 가까이 두고, 보관함의 '마이크 테스트'에서 음이 잡히는지 확인해 보세요.`
-      : `${heard}. 초록 정확 · 빨강 틀림(옆 글자가 부른 음) · 노랑 박자만 틀림 · 회색 인식 안 됨. 점을 누르면 그 음의 그래프가 나와요.`;
+    const note = err ? `목소리가 거의 안 잡혔어요 (${Math.round(s.voicedShare * 100)}%). 폰을 입 가까이 두고 다시 해 보세요.`
+      : "음표의 점을 누르면 그 음의 그래프가 나와요";
     last = { res, rec, range, note, err, opt: res.opt };
-    tools.hidden = false;
     melBtn.hidden = mode !== "echo";
+    worstBtn.hidden = mode !== "sing" || !worstK(res.notes);
     table.textContent = "";
     const t = h("table"), hr = h("tr");
-    for (const c of ["마디", "박", "가사", "목표", "부른 음", "차이", "판정", "박자", "음 잡힘"]) hr.append(h("th", null, c));
+    for (const c of ["마디", "박", "가사", "목표", "부른 음", "차이", "판정", "박자"]) hr.append(h("th", null, c));
     t.append(hr);
     for (const n of res.notes) {
       const tr = h("tr", "v-" + (n.color || n.verdict)), mm = n.ref ? song.measures[n.ref.m] : null;
       const cells = [mm ? mm.n : "", n.ref ? Math.round((n.ref.beat + 1) * 100) / 100 : "", n.ref ? n.ref.lyric : "",
         noteName(n.target) + (n.refs && n.refs.length > 1 ? " (화음 중)" : ""), n.sung ? n.sung.name : "—",
         n.cents === null ? "—" : (n.cents > 0 ? "+" : "") + Math.round(n.cents),
-        VERDICT[n.verdict] + (n.dir === "high" ? " ↑" : n.dir === "low" ? " ↓" : ""),
-        n.timing && n.timing.verdict ? (n.timing.verdict === "ok" ? "맞음" : (n.timing.offsetMs > 0 ? "+" : "") + (n.timing.offsetMs / 1000).toFixed(2) + "초") : "—",
-        Math.round(n.voiced * 100) + "%"];
+        n.ambiguous ? "애매(반주와 같은 음)" : VERDICT[n.verdict] + (n.dir === "high" ? " ↑" : n.dir === "low" ? " ↓" : ""),
+        n.timing && n.timing.verdict ? (n.timing.verdict === "ok" ? "맞음" : (n.timing.offsetMs > 0 ? "+" : "") + (n.timing.offsetMs / 1000).toFixed(2) + "초") : "—"];
       for (const c of cells) tr.append(h("td", null, String(c)));
       t.append(tr);
     }
     table.append(t);
   }
-  tableBtn.onclick = () => { table.hidden = !table.hidden; tableBtn.textContent = table.hidden ? "표 보기" : "표 닫기"; };
+  // 가장 많이 틀린(틀림·인식 안 됨) 마디 → 연주 순서 번호 (없으면 null)
+  function worstK(ns) {
+    const bad = new Map();
+    for (const n of ns) if (n.verdict !== "ok" && n.ref) bad.set(n.ref.k, (bad.get(n.ref.k) || 0) + 1);
+    let best = null;
+    for (const [k, c] of bad) if (best === null || c > bad.get(best) || (c === bad.get(best) && k < best)) best = k;
+    return best;
+  }
+  worstBtn.onclick = () => {                                       // 반주와 부르기 결과 → 가장 많이 틀린 마디를 메아리로 (2마디씩)
+    if (!last || job) return;
+    const k = worstK(last.res.notes);
+    if (k === null) return;
+    setMode("echo");
+    unitSel.echo.value = "2";
+    pick(k);
+    setMsg(`${measureN(k)}마디에서 가장 많이 틀렸어요. 메아리로 연습해요`);
+  };
+  tableBtn.onclick = () => { table.hidden = !table.hidden; tableBtn.textContent = table.hidden ? "📋 표" : "📋 표 닫기"; };
   myBtn.onclick = () => {
     if (!last || !last.rec) return;
-    if (stopPlayback) { stopPlayback(); stopPlayback = null; myBtn.textContent = "🎤 내 녹음 듣기"; return; }
+    if (stopPlayback) { stopPlayback(); stopPlayback = null; myBtn.textContent = "🎤 내 녹음"; return; }
     stopPlayback = playRecording(sound, last.rec);
-    myBtn.textContent = "■ 그만 듣기";
-    const sec = last.rec.audio.length / last.rec.sampleRate;
-    setTimeout(() => { stopPlayback = null; myBtn.textContent = "🎤 내 녹음 듣기"; }, sec * 1000 + 200);
+    myBtn.textContent = "■ 그만";
+    const secs = last.rec.audio.length / last.rec.sampleRate;
+    setTimeout(() => { stopPlayback = null; myBtn.textContent = "🎤 내 녹음"; }, secs * 1000 + 200);
   };
   melBtn.onclick = async () => {                                   // 원래 멜로디 다시 듣기 (마이크 없이)
     if (job || !nav.cur) return;
     const j = begin();
-    try { await Echo.listen(ctlFor(j), listenAcc.checked); } finally { end(); }
+    try { await Echo.listen(ctlFor(j), pref.listenAcc); } finally { end(); }
   };
   go.onclick = () => run(mode === "echo" && !(last && last.range === nav.cur));
 
@@ -394,16 +535,20 @@ export async function openPanel(app) {
     if (closed) return;
     closed = true;
     clearTimeout(autoTimer);
+    clearTimeout(idleTimer);
     closeNotePopup();
+    if (closeSheet) closeSheet();
     if (job) { job.cancelled = true; player.pause(); if (job.restore) job.restore(); }      // 앱이 곡을 닫으며 저장하기 전에 되돌린다
     if (stopPlayback) stopPlayback();
+    if (kara) kara.destroy();
     eng.stop();
     ov.clear();
     document.removeEventListener("visibilitychange", onHide);
     app.score.removeEventListener("click", onScoreTap, true);
     app.back.removeEventListener("click", shut, true);
-    app.practice.classList.remove("sing-on");
+    app.practice.classList.remove("sing-on", "sing-k");
     panel.remove();
+    karaBox.remove();
     app.refresh();
     app.save();
   }

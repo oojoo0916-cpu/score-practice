@@ -12,12 +12,12 @@ export async function sing(ctl) {
   let T = null;
   const r = await playRange(ctl, job, {
     from: range.from, to: range.to, tail: S.singTailSec,
-    mix: MIX.accomp(ctl.player, ctl.me, { withAcc: ctl.withAcc, hasAcc: ctl.hasAcc, melodyVol: ctl.melody ? S.singMelodyVol : 0, countIn: ctl.countIn }),
+    mix: MIX.accomp(ctl.player, ctl.me, { withAcc: ctl.withAcc, hasAcc: ctl.hasAcc, melodyVol: ctl.melody ? S.singMelodyVol : 0, countIn: ctl.countIn, accVol: ctl.accVol }),
     onStart: (t) => { T = t; if (ctl.countIn) tone(sound, ctl.first, S.singPrimeSec); },
     onTick: (t, TT) => {
       const before = t < TT(range.from);
-      status(before ? "준비… 박자를 세요" : "● 부르는 중 — 끝까지 불러요 (그만두려면 ■)", before ? "count" : "sing");
-      if (ctl.live && !before) ctl.live(t, TT);
+      status(before ? "준비… 박자를 세요" : "● 부르는 중", before ? "count" : "sing");
+      if (ctl.live) ctl.live(t, TT);                               // 카운트인 동안에도 불러서 노래방 화면이 미리 막대를 보여 주게
     },
   });
   const stopAt = sound.ctx.currentTime;
