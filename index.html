@@ -32,6 +32,17 @@
     <p>위의 <b>악보 올리기</b>로 PDF 악보를 넣어 주세요.<br>악보는 이 기기 안에서만 읽고, 밖으로 보내지 않아요.</p>
     <p class="small">사보 프로그램(Finale, Sibelius, MuseScore)에서 뽑은 PDF와, 사보 프로그램이 내보낸 MusicXML 파일(.musicxml · .mxl)을 읽을 수 있어요. 스캔·사진 악보는 집 컴퓨터가 켜져 있고 같은 와이파이일 때 읽을 수 있어요 (1~3분, 틀린 곳이 있을 수 있어요).</p>
   </div>
+  <details class="tips">
+    <summary>악보 사진 잘 찍는 법</summary>
+    <ul>
+      <li>종이 <b>네 모서리가 다 보이게</b>, 종이보다 어두운 바닥(책상) 위에 놓고 찍어 주세요. 앱이 종이를 찾아 반듯하게 펴요.</li>
+      <li>폰을 종이와 나란하게, <b>바로 위에서</b> 찍어 주세요.</li>
+      <li><b>밝은 곳</b>에서, 폰·손 그림자가 악보에 지지 않게 해 주세요.</li>
+      <li><b>흔들리지 않게</b> — 팔꿈치를 책상에 대면 좋아요. 흐리면 앱이 다시 찍기를 권해요.</li>
+      <li>책은 최대한 펴 주세요 (가운데가 휘면 틀리기 쉬워요). 한 장에 한 쪽씩 찍어요.</li>
+      <li>쪽이 많으면 폰의 스캔 기능(메모·파일 앱 등)으로 PDF를 만들어 올리면 편해요.</li>
+    </ul>
+  </details>
   <p class="libtools"><button id="exportBtn" class="link" hidden>고친 기록 내보내기</button></p>
   <p id="persistNote" class="small" hidden></p>
   <p id="offlineNote" class="small" hidden></p>
@@ -49,6 +60,7 @@
   </header>
   <p id="pStatus" class="status" hidden></p>
   <p id="pMissed" class="status err" hidden></p>
+  <p id="pCheck" class="status check" hidden><span id="pCheckText"></span><button id="pCheckGo" class="btn sm">첫 확인 마디 고치기</button></p>
   <main id="score" class="score"></main>
 
   <div id="editBar" class="editbar" hidden>

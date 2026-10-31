@@ -281,6 +281,21 @@ export function checkState(song) {
   return { measures, count };
 }
 
+// 스캔 곡의 음표 가로 자리: 집 컴퓨터가 원본 그림에서 음표 머리를 찾아 박마다 적어 둔 자리(L.heads, tools/scan_heads.py)가 있으면 그것,
+// 없으면 앞뒤로 찾은 박 사이를 박으로 나눠 어림, 그것도 없으면 마디 안 박 비례(guess)
+export function scanNoteX(L, part, beat, len, start, end, guess) {
+  const hs = ((L.heads && L.heads[part.xml]) || []).filter((h) => h[1] === (part.sub || 1)).sort((a, b) => a[0] - b[0]);
+  if (!hs.length) return guess;
+  const hit = hs.find((h) => Math.abs(h[0] - beat) < 1e-3);
+  if (hit) return hit[2];
+  const pts = [[0, start], ...hs.map((h) => [h[0], h[2]]), [len, end]];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ba, xa] = pts[i], [bb, xb] = pts[i + 1];
+    if (ba <= beat && beat <= bb && bb > ba) return xa + (xb - xa) * (beat - ba) / (bb - ba);
+  }
+  return guess;
+}
+
 export function chordVoicing(name) {
   const c = parseChord(name);
   if (!c) return null;

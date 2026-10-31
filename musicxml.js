@@ -328,11 +328,28 @@ export function parse(xml, title, opts = {}) {
     const out = { n: Number.isFinite(n) && String(n) === String(M.number).trim() ? n : i + 1, page: 1, system: 1, box: [0, 0, 1, 1], meter: meter.slice(), len, bpm: Math.round(bpm * 100) / 100, key,
       rep_start: M.rep_start, rep_end: M.rep_end, ending: M.ending, final: M.final, pickup: i === 0 && len < nominal - 1e-6,
       ok: fine, piano_ok: true, chords: M.chords.sort((a, b) => a.beat - b.beat), marks: M.marks, labels: M.labels };
-    if (!fine) out.why = ["sum"];                                   // 스캔 인식 결과의 자동 검사는 박자 합뿐이다
+    if (!fine) out.why = ["sum"];                                   // 박자 합: 앱이 직접 센다
     if (M.skipped) out.unsupported = [...M.skipped].sort();         // 소리 내지 않는 표기 (확인 필요 여부와는 별개)
     for (const tp of tempos) if (tp.mi === i && tp.beat >= len / 2 + 1e-6) bpm = tp.bpm;     // 뒤쪽의 빠르기말은 다음 마디부터
     return out;
   });
+
+  // 스캔: 집 컴퓨터가 정답 없이 검사해서 적어 둔 '확인 필요' 마디 (tools/scan_check.py — 줄끼리 다르게 읽은 마디, 조표 밖 음이 많은 마디, 튀는 음 등)
+  if (opts.check) {
+    for (const f of doc.getElementsByTagName("miscellaneous-field")) {
+      if (f.getAttribute("name") !== "akbo-scan-check") continue;
+      let need = {};
+      try { need = JSON.parse(f.textContent || "{}").need || {}; } catch (err) { need = {}; }
+      for (const [k, ws] of Object.entries(need)) {
+        const m = measures[parseInt(k, 10)];
+        if (!m || !Array.isArray(ws)) continue;
+        const add = ws.filter((w) => typeof w === "string" && !(m.why || []).includes(w));
+        if (!add.length) continue;
+        m.why = (m.why || []).concat(add);
+        m.ok = false;
+      }
+    }
+  }
 
   // ---- 파트: 노래(가사가 있거나 한 줄짜리) 먼저, 피아노는 뒤에
   const count = { vocal: 0, piano: 0 };
@@ -356,7 +373,7 @@ export function parse(xml, title, opts = {}) {
     const notes = [...seen.values()].filter((x) => x.dur > 0 && x.beat < measures[x.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat || a.midi - b.midi);
     const name = l.role === "piano" ? `피아노 ${k}` : (l.label && !/^(musicxml part|part\s*\d*|voice|staff)$/i.test(l.label) ? l.label + (l.sub ? ` ${l.sub}` : "") : `노래 ${k}`);
     const rs = l.rests ? { rests: l.rests.filter((r) => r.dur > 0 && r.beat < measures[r.m].len - 1e-6).sort((a, b) => a.m - b.m || a.beat - b.beat), rest_unsure: [] } : {};
-    // check: 이 줄이 어떤 확인을 거쳤는지. 사보 프로그램이 내보낸 파일은 적힌 그대로 옮긴 것("file"), 스캔 인식 결과는 박자 합만 본 것("scan")
+    // check: 이 줄이 어떤 확인을 거쳤는지. 사보 프로그램이 내보낸 파일은 적힌 그대로 옮긴 것("file"), 스캔 인식 결과는 정답 없는 자동 검사만 거친 것("scan")
     return { id: l.role + k, role: l.role, name, check: opts.check ? "scan" : "file", staff: l.si, xml: l.xml, sub: l.sub, notes, ...rs };
   });
   if (!parts.length) throw new Error("이 MusicXML 파일에는 음표가 없어요");
